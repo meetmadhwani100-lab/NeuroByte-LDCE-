@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   ChevronRight, LogOut, ShieldCheck, Search, Download,
@@ -11,6 +11,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
 } from "recharts";
 import { allStudents, coordinator, departmentStats } from "@/data/mock";
+import { supabase } from "@/lib/Client";
 import { RiskBadge } from "@/components/RiskBadge";
 
 const RISK_COLORS = {
@@ -23,10 +24,33 @@ const PAGE_SIZE = 20;
 
 export default function CoordinatorDashboard() {
   const router = useRouter();
+  const [isAuthorized, setIsAuthorized] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterRisk, setFilterRisk] = useState<"All" | "High" | "Medium" | "Low">("All");
   const [page, setPage] = useState(1);
   const [sortBy, setSortBy] = useState<"risk" | "name" | "attendance">("risk");
+
+  useEffect(() => {
+    const enforceSecurity = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        router.push('/login');
+        return;
+      }
+      const { data: userData } = await supabase
+        .from('users')
+        .select('role')
+        .eq('id', session.user.id)
+        .single();
+
+      if (userData?.role !== 'COORDINATOR') {
+        router.push('/login');
+        return;
+      }
+      setIsAuthorized(true);
+    };
+    enforceSecurity();
+  }, [router]);
 
   const pieData = [
     { name: "High Risk", value: departmentStats.highRisk, color: RISK_COLORS.High },
@@ -71,6 +95,10 @@ export default function CoordinatorDashboard() {
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  if (!isAuthorized) {
+    return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-slate-500 font-medium">Verifying secure access...</div>;
+  }
 
   return (
     <div className="min-h-screen bg-slate-50">

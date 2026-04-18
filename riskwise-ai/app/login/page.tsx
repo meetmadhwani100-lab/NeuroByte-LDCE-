@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ShieldCheck, GraduationCap, HeartHandshake, BookOpen, Building2, Eye, EyeOff } from "lucide-react";
 import { AUTH_ROLES, type AuthRole } from "@/data/mock";
+import { supabase } from "@/lib/Client";
 
 const roleIcons: Record<string, React.ReactNode> = {
   student: <GraduationCap className="w-5 h-5" />,
@@ -45,27 +46,65 @@ export default function LoginPage() {
     setError("");
   };
 
-  const handleSignIn = async (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError("");
 
-    // Simulate auth
-    await new Promise((r) => setTimeout(r, 800));
+    console.log("--- STARTING LOGIN CHECK ---");
+    console.log("Attempting to log in email:", email);
 
-    const roleData = AUTH_ROLES.find((r) => r.role === selectedRole);
-    if (!roleData) {
-      setError("Invalid role selected.");
+    // CHECKPOINT 1: Supabase Authentication
+    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+      email: email,
+      password: password,
+    });
+
+    if (authError) {
+      console.error("AUTH ERROR:", authError.message);
+      setError(`CHECKPOINT 1 FAILED: ${authError.message}`);
       setLoading(false);
-      return;
-    }
-    if (email !== roleData.email || password !== "demo123") {
-      setError("Invalid credentials. Use the pre-filled demo credentials.");
-      setLoading(false);
-      return;
+      return; // Stops here
     }
 
-    router.push(roleData.redirectTo);
+    console.log("Checkpoint 1 Passed! User Auth ID:", authData.user?.id);
+
+    // CHECKPOINT 2: Custom 'Users' Table Lookup
+    const { data: userData, error: dbError } = await supabase
+      .from("users")
+      .select("role")
+      .eq("id", authData.user?.id)
+      .single();
+
+    if (dbError) {
+      console.error("DB ERROR:", dbError.message);
+      setError(`CHECKPOINT 2 FAILED (Database Error): ${dbError.message}`);
+      setLoading(false);
+      return; // Stops here
+    }
+
+    if (!userData) {
+      setError("CHECKPOINT 2 FAILED: Auth worked, but this UID is missing from your custom 'Users' table!");
+      setLoading(false);
+      return; // Stops here
+    }
+
+    console.log("Checkpoint 2 Passed! User Role found:", userData.role);
+
+    // CHECKPOINT 3: Strict Tab Matching
+    const currentTabUpper = selectedRole.toUpperCase();
+    if (userData.role !== currentTabUpper) {
+      await supabase.auth.signOut();
+      setError(`CHECKPOINT 3 FAILED: You are a ${userData.role}, but tried logging in via the ${currentTabUpper} tab.`);
+      setLoading(false);
+      return; // Stops here
+    }
+
+    // ALL CHECKS PASSED - ROUTE THEM
+    if (userData.role === "STUDENT") router.push("/student");
+    if (userData.role === "MENTOR") router.push("/mentor");
+    if (userData.role === "TEACHER") router.push("/teacher");
+    if (userData.role === "COORDINATOR") router.push("/coordinator");
   };
 
   const selectedRoleData = AUTH_ROLES.find((r) => r.role === selectedRole)!;
@@ -128,7 +167,7 @@ export default function LoginPage() {
           </div>
 
           {/* Form */}
-          <form onSubmit={handleSignIn} className="space-y-4">
+          <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-slate-600 mb-1.5">Email Address</label>
               <input

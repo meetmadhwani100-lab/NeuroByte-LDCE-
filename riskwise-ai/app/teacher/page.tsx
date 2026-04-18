@@ -1,279 +1,438 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
-  ChevronRight, LogOut, ShieldCheck, Search, Save, CheckCircle2,
-  BookOpen, Users, TrendingUp, Edit3,
+  LogOut, ShieldCheck, ChevronRight, CheckCircle2, AlertCircle,
+  Loader2, GraduationCap, Bell, ClipboardList, BarChart3,
+  PlusCircle, Square, CheckSquare2, Users, BookOpen,
 } from "lucide-react";
-import { allStudents, teachers, SUBJECTS } from "@/data/mock";
-import { RiskBadge } from "@/components/RiskBadge";
+import { supabase } from "@/lib/Client";
+import {
+  updateStudentSubjectData,
+  getStudentAssignments,
+  toggleAssignmentStatus,
+  createAssignment,
+} from "@/actions/teacherActions";
 
-const TEACHER = teachers[0]; // Prof. Anita Patel — Physics
-const SUBJECT = TEACHER.subject;
+type Assignment = {
+  id: string;
+  assignment_title: string;
+  subject: string | null;
+  due_date: string;
+  is_completed: boolean;
+  student_reason: string | null;
+};
 
-type StudentEdit = {
-  marks: number;
-  attendance: number;
-  edited: boolean;
+type DbStudent = {
+  id: string;          // users.id (auth UID)
+  dbId: string | null; // students.id (PK)
+  studentName: string;
+  email: string;
 };
 
 export default function TeacherDashboard() {
   const router = useRouter();
-  const [selectedSubject, setSelectedSubject] = useState(SUBJECT);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [edits, setEdits] = useState<Record<string, StudentEdit>>({});
+  const [isAuthorized, setIsAuthorized] = useState(false);
+  const [teacherUserId, setTeacherUserId] = useState("");
+  const [teacherName, setTeacherName] = useState("Teacher");
+  const [specialty, setSpecialty] = useState<string | null>(null); // e.g. "math"
 
-  const subjectStudents = allStudents
-    .map((s) => ({
-      ...s,
-      subjectMarks: s.examMarks.find((m) => m.subject === selectedSubject),
-    }))
-    .filter((s) => s.subjectMarks)
-    .sort((a, b) => b.overallRiskScore - a.overallRiskScore);
+  // students
+  const [students, setStudents] = useState<DbStudent[]>([]);
+  const [selectedStudent, setSelectedStudent] = useState<DbStudent | null>(null);
 
-  const filteredStudents = subjectStudents.filter((s) =>
-    s.studentName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    s.rollNo.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // form
+  const [marks, setMarks] = useState("");
+  const [attendance, setAttendance] = useState("");
+  const [formLoading, setFormLoading] = useState(false);
+  const [formSuccess, setFormSuccess] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
-  const getMarks = (studentId: string, original: number) =>
-    edits[studentId]?.marks ?? original;
+  // assignments
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [asgLoading, setAsgLoading] = useState(false);
+  const [toggleLoading, setToggleLoading] = useState<string | null>(null);
 
-  const getAttendance = (studentId: string, original: number) =>
-    edits[studentId]?.attendance ?? original;
+  // add assignment
+  const [showAddAsg, setShowAddAsg] = useState(false);
+  const [newAsgTitle, setNewAsgTitle] = useState("");
+  const [newAsgDue, setNewAsgDue] = useState("");
+  const [addAsgLoading, setAddAsgLoading] = useState(false);
 
-  const handleEdit = (studentId: string, field: "marks" | "attendance", value: number) => {
-    setEdits((prev) => ({
-      ...prev,
-      [studentId]: {
-        marks: prev[studentId]?.marks ?? allStudents.find(s => s.id === studentId)?.examMarks.find(m => m.subject === selectedSubject)?.marks ?? 0,
-        attendance: prev[studentId]?.attendance ?? allStudents.find(s => s.id === studentId)?.attendancePercentage ?? 0,
-        ...prev[studentId],
-        [field]: value,
-        edited: true,
-      },
-    }));
-    setSaved(false);
+  // ── Bouncer ──────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const run = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { router.push("/login"); return; }
+
+      const { data: userData } = await supabase
+        .from("users")
+        .select("role, full_name, subject_specialty")
+        .eq("id", session.user.id)
+        .single();
+
+      if (userData?.role !== "TEACHER") { router.push("/login"); return; }
+
+      setTeacherUserId(session.user.id);
+      setTeacherName(userData?.full_name || "Teacher");
+      setSpecialty(userData?.subject_specialty ?? null);
+
+      // Fetch all STUDENT users + their students.id
+      const { data: studentUsers } = await supabase
+        .from("users")
+        .select("id, full_name, email")
+        .eq("role", "STUDENT");
+
+      if (studentUsers) {
+        // For each student user, also look up their students row id
+        const enriched: DbStudent[] = await Promise.all(
+          studentUsers.map(async u => {
+            const { data: sRow } = await supabase
+              .from("students")
+              .select("id")
+              .eq("user_id", u.id)
+              .single();
+            return {
+              id: u.id,
+              dbId: sRow?.id ?? null,
+              studentName: u.full_name || u.email,
+              email: u.email,
+            };
+          })
+        );
+        setStudents(enriched);
+      }
+
+      setIsAuthorized(true);
+    };
+    run();
+  }, [router]);
+
+  // ── Load assignments ───────────────────────────────────────────────────────
+  const loadAssignments = useCallback(async (dbId: string) => {
+    setAsgLoading(true);
+    try {
+      const data = await getStudentAssignments(dbId);
+      setAssignments(data as Assignment[]);
+    } finally {
+      setAsgLoading(false);
+    }
+  }, []);
+
+  const handleSelectStudent = (s: DbStudent) => {
+    setSelectedStudent(s);
+    setMarks(""); setAttendance("");
+    setFormSuccess(false); setFormError(null);
+    setAssignments([]);
+    loadAssignments(s.id);
   };
 
-  const handleSave = async () => {
-    setSaving(true);
-    await new Promise((r) => setTimeout(r, 800));
-    setSaving(false);
-    setSaved(true);
-    // Mark all as saved
-    setEdits((prev) => {
-      const next = { ...prev };
-      Object.keys(next).forEach((k) => (next[k] = { ...next[k], edited: false }));
-      return next;
-    });
-    setTimeout(() => setSaved(false), 3000);
+  // ── Submit marks ───────────────────────────────────────────────────────────
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedStudent) return;
+    
+    if (!specialty) {
+      setFormError("Your account has no subject_specialty set. Ask your coordinator to update it in Supabase.");
+      return;
+    }
+    const m = parseFloat(marks), a = parseFloat(attendance);
+    if (isNaN(m) || m < 0 || m > 100) { setFormError("Marks must be 0–100."); return; }
+    if (isNaN(a) || a < 0 || a > 100) { setFormError("Attendance must be 0–100."); return; }
+
+    setFormLoading(true); setFormSuccess(false); setFormError(null);
+    try {
+      await updateStudentSubjectData(teacherUserId, selectedStudent.id, m, a);
+      setFormSuccess(true); setMarks(""); setAttendance("");
+    } catch (err: unknown) {
+      setFormError(err instanceof Error ? err.message : "Failed to save.");
+    } finally {
+      setFormLoading(false);
+    }
   };
 
-  const totalEdited = Object.values(edits).filter((e) => e.edited).length;
-  const avgMarks = Math.round(
-    filteredStudents.reduce((sum, s) => sum + getMarks(s.id, s.subjectMarks?.marks ?? 0), 0) / Math.max(filteredStudents.length, 1)
-  );
+  // ── Toggle assignment ──────────────────────────────────────────────────────
+  const handleToggle = async (asg: Assignment) => {
+    setToggleLoading(asg.id);
+    try {
+      await toggleAssignmentStatus(asg.id, !asg.is_completed);
+      setAssignments(prev => prev.map(a => a.id === asg.id ? { ...a, is_completed: !a.is_completed } : a));
+    } finally {
+      setToggleLoading(null);
+    }
+  };
+
+  // ── Add assignment ─────────────────────────────────────────────────────────
+  const handleAddAsg = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedStudent || !newAsgTitle.trim() || !newAsgDue) return;
+    setAddAsgLoading(true);
+    try {
+      await createAssignment(teacherUserId, selectedStudent.id, newAsgTitle.trim(), newAsgDue);
+      setNewAsgTitle(""); setNewAsgDue(""); setShowAddAsg(false);
+      await loadAssignments(selectedStudent.id);
+    } finally {
+      setAddAsgLoading(false);
+    }
+  };
+
+  if (!isAuthorized) {
+    return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-slate-500">Verifying secure access...</div>;
+  }
+
+  const now = new Date();
+  const specialtyLabel = specialty ? specialty.toUpperCase() : null;
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-amber-50/30 to-orange-50/20 flex flex-col">
       {/* Navbar */}
-      <nav className="sticky top-0 z-50 bg-white border-b border-slate-200 shadow-sm">
-        <div className="max-w-7xl mx-auto px-6 py-3.5 flex items-center justify-between">
+      <nav className="sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-slate-200 shadow-sm">
+        <div className="max-w-screen-xl mx-auto px-6 py-3.5 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-400 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-400 flex items-center justify-center shadow-md shadow-amber-200">
               <ShieldCheck className="w-4 h-4 text-white" />
             </div>
             <span className="font-bold text-slate-800">RiskWise AI</span>
-            <ChevronRight className="w-4 h-4 text-slate-400" />
-            <span className="text-sm text-slate-500 font-medium">Subject Teacher Dashboard</span>
+            <ChevronRight className="w-4 h-4 text-slate-300" />
+            <span className="text-sm text-slate-500 font-medium">Teacher Portal</span>
           </div>
           <div className="flex items-center gap-3">
+            {specialtyLabel && (
+              <div className="flex items-center gap-1.5 bg-amber-100 border border-amber-200 rounded-xl px-3 py-1.5">
+                <BookOpen className="w-3.5 h-3.5 text-amber-600" />
+                <span className="text-xs font-bold text-amber-700">Assigned: {specialtyLabel}</span>
+              </div>
+            )}
             <div className="flex items-center gap-2 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">
               <div className="w-6 h-6 rounded-full bg-gradient-to-br from-amber-400 to-orange-300 flex items-center justify-center text-white text-xs font-bold">
-                {TEACHER.name.split(" ")[1]?.[0] ?? "T"}
+                {teacherName[0]}
               </div>
-              <span className="text-sm font-medium text-amber-700">{TEACHER.name}</span>
+              <span className="text-sm font-semibold text-amber-700">{teacherName}</span>
             </div>
-            <button
-              onClick={() => router.push("/login")}
-              className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-red-600 hover:bg-red-50 px-3 py-2 rounded-xl transition-all"
-            >
+            <button onClick={() => router.push("/login")}
+              className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-red-600 hover:bg-red-50 px-3 py-2 rounded-xl transition-all">
               <LogOut className="w-4 h-4" /> Sign Out
             </button>
           </div>
         </div>
       </nav>
 
-      <div className="max-w-7xl mx-auto px-6 py-8">
-        {/* Header */}
-        <div className="flex items-start justify-between mb-8">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900">Subject Grade Management</h1>
-            <p className="text-slate-500 text-sm mt-1">
-              Update internal marks and attendance for your subject. Sorted by highest risk.
-            </p>
-          </div>
-          {totalEdited > 0 && (
-            <button
-              id="save-changes-btn"
-              onClick={handleSave}
-              disabled={saving}
-              className="flex items-center gap-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-white font-semibold px-5 py-2.5 rounded-xl shadow-md shadow-amber-200 transition-all"
-            >
-              {saved ? <CheckCircle2 className="w-4 h-4" /> : saving ? (
-                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
-                  <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-                </svg>
-              ) : <Save className="w-4 h-4" />}
-              {saved ? "Saved!" : saving ? "Saving..." : `Save ${totalEdited} Changes`}
-            </button>
-          )}
-        </div>
-
-        {/* Subject Tabs */}
-        <div className="flex gap-2 mb-6 overflow-x-auto pb-1">
-          {SUBJECTS.map((subj) => (
-            <button
-              key={subj}
-              id={`subject-tab-${subj.replace(/\s+/g, "-").toLowerCase()}`}
-              onClick={() => { setSelectedSubject(subj); setSearchQuery(""); setEdits({}); setSaved(false); }}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap transition-all ${
-                selectedSubject === subj
-                  ? "bg-amber-500 text-white shadow-md shadow-amber-200"
-                  : "bg-white text-slate-600 border border-slate-200 hover:border-amber-200 hover:text-amber-600 hover:bg-amber-50"
-              }`}
-            >
-              <BookOpen className="w-3.5 h-3.5" />
-              {subj}
-            </button>
-          ))}
-        </div>
-
-        {/* Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          {[
-            { label: "Total Students", value: filteredStudents.length, color: "text-slate-800", bg: "bg-white border-slate-200" },
-            { label: "High Risk", value: filteredStudents.filter(s => s.riskLevel === "High").length, color: "text-red-600", bg: "bg-red-50 border-red-200" },
-            { label: `Avg ${selectedSubject} Marks`, value: `${avgMarks}%`, color: "text-amber-600", bg: "bg-amber-50 border-amber-200" },
-            { label: "Changes Pending", value: totalEdited, color: totalEdited > 0 ? "text-indigo-600" : "text-slate-400", bg: totalEdited > 0 ? "bg-indigo-50 border-indigo-200" : "bg-white border-slate-200" },
-          ].map((stat) => (
-            <div key={stat.label} className={`${stat.bg} border rounded-2xl p-5 shadow-sm`}>
-              <div className={`text-3xl font-extrabold mb-1 ${stat.color}`}>{stat.value}</div>
-              <div className="text-xs text-slate-500 font-medium">{stat.label}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Table */}
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-          <div className="p-4 border-b border-slate-100 flex items-center gap-3">
-            <div className="flex items-center gap-2 flex-1 max-w-sm">
-              <Search className="w-4 h-4 text-slate-400 shrink-0" />
-              <input
-                id="teacher-search"
-                type="text"
-                placeholder="Search student..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full py-2 text-sm text-slate-700 focus:outline-none bg-transparent placeholder-slate-400"
-              />
-            </div>
-            <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
-              <Edit3 className="w-3.5 h-3.5" />
-              <span>Click cells to edit marks & attendance</span>
+      {/* No specialty warning */}
+      {!specialty && (
+        <div className="max-w-screen-xl mx-auto px-6 pt-4 w-full">
+          <div className="flex items-start gap-3 bg-amber-50 border border-amber-300 text-amber-800 rounded-2xl px-5 py-4 text-sm">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold">Subject specialty not set on your account.</p>
+              <p className="mt-0.5">Go to <strong>Supabase → users table</strong> and set the <code className="bg-amber-100 px-1 rounded">subject_specialty</code> column for your user to one of: <code className="bg-amber-100 px-1 rounded">math, physics, cs, english, biology</code>.</p>
             </div>
           </div>
+        </div>
+      )}
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-200">
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">#</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Student</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Risk</th>
-                  <th className="text-center px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                    {selectedSubject} Marks
-                  </th>
-                  <th className="text-center px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                    Attendance (%)
-                  </th>
-                  <th className="text-center px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Overall Risk</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {filteredStudents.map((student, idx) => {
-                  const isEdited = edits[student.id]?.edited;
-                  return (
-                    <tr key={student.id} className={`hover:bg-slate-50 transition-colors ${isEdited ? "bg-indigo-50/40" : ""}`}>
-                      <td className="px-4 py-3.5 text-slate-400 font-medium text-sm">{idx + 1}</td>
-                      <td className="px-4 py-3.5">
-                        <div className="flex items-center gap-2.5">
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold ${
-                            student.riskLevel === "High" ? "bg-red-400" :
-                            student.riskLevel === "Medium" ? "bg-amber-400" : "bg-teal-400"
-                          }`}>
-                            {student.studentName[0]}
-                          </div>
-                          <div>
-                            <p className="font-semibold text-slate-800">{student.studentName}</p>
-                            <p className="text-xs text-slate-400">{student.rollNo}</p>
-                          </div>
+      {/* Two-pane layout */}
+      <div className="flex flex-1 max-w-screen-xl mx-auto w-full overflow-hidden">
+
+        {/* LEFT: Student list */}
+        <aside className="w-72 shrink-0 border-r border-slate-200 bg-white flex flex-col">
+          <div className="px-4 py-4 border-b border-slate-100">
+            <h2 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
+              <Users className="w-4 h-4 text-amber-500" /> Your Students
+            </h2>
+          </div>
+          <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+            {students.length === 0 ? (
+              <div className="py-8 text-center text-slate-400 text-sm">No students found.</div>
+            ) : students.map(s => (
+              <button key={s.id} onClick={() => handleSelectStudent(s)}
+                className={`w-full text-left px-4 py-3.5 hover:bg-amber-50 transition-all ${selectedStudent?.id === s.id ? "bg-amber-50 border-l-4 border-amber-400" : ""}`}>
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-amber-400 to-orange-300 flex items-center justify-center text-white text-xs font-bold shrink-0">
+                    {s.studentName[0]}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-800 text-sm truncate">{s.studentName}</p>
+                    <p className="text-xs text-slate-400 truncate">{s.email}</p>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        {/* RIGHT: Main content */}
+        <main className="flex-1 overflow-y-auto p-6">
+          {!selectedStudent ? (
+            <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-3">
+              <Users className="w-12 h-12 opacity-20" />
+              <p className="text-sm">Select a student from the sidebar to enter their records.</p>
+            </div>
+          ) : (
+            <div className="max-w-2xl space-y-6">
+              <div>
+                <h1 className="text-xl font-bold text-slate-900">{selectedStudent.studentName}</h1>
+                <p className="text-sm text-slate-400">{selectedStudent.email}</p>
+              </div>
+
+              {/* Marks & Attendance Form */}
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                <div className="px-6 py-5 border-b border-slate-100 flex items-center gap-3">
+                  <div className="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center">
+                    <ClipboardList className="w-4 h-4 text-amber-600" />
+                  </div>
+                  <div>
+                    <h2 className="font-bold text-slate-800">Enter Academic Record</h2>
+                    <p className="text-xs text-slate-400">
+                      Updating: <strong className="text-amber-600">{specialtyLabel ?? "No Subject Set"}</strong> columns
+                    </p>
+                  </div>
+                </div>
+
+                <form onSubmit={handleSubmit} className="p-6 space-y-5">
+                  <div className="grid grid-cols-2 gap-5">
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                        Internal Marks (%)
+                      </label>
+                      <input
+                        type="number" min={0} max={100} placeholder="0–100"
+                        value={marks} onChange={e => { setMarks(e.target.value); setFormSuccess(false); setFormError(null); }}
+                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-slate-700 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-amber-400 transition-all placeholder:font-normal placeholder:text-slate-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                        Attendance (%)
+                      </label>
+                      <input
+                        type="number" min={0} max={100} placeholder="0–100"
+                        value={attendance} onChange={e => { setAttendance(e.target.value); setFormSuccess(false); setFormError(null); }}
+                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-slate-700 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-amber-400 transition-all placeholder:font-normal placeholder:text-slate-400"
+                      />
+                    </div>
+                  </div>
+
+                  <button type="submit" disabled={formLoading || !specialty}
+                    className="w-full flex items-center justify-center gap-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-amber-200 transition-all active:scale-[0.98]">
+                    {formLoading ? <><Loader2 className="w-4 h-4 animate-spin" />Saving...</> : <><Bell className="w-4 h-4" />Submit &amp; Notify Parents</>}
+                  </button>
+
+                  {formSuccess && (
+                    <div className="flex items-center gap-3 bg-teal-50 border border-teal-200 text-teal-700 rounded-xl px-4 py-3.5 text-sm">
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      <div>
+                        <p className="font-semibold">Saved to database!</p>
+                        <p className="text-xs text-teal-600 mt-0.5">Updated <strong>{specialty}_marks</strong> and <strong>{specialty}_attendance</strong> for {selectedStudent.studentName}.</p>
+                      </div>
+                    </div>
+                  )}
+                  {formError && (
+                    <div className="flex items-start gap-3 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3.5 text-sm">
+                      <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                      <p>{formError}</p>
+                    </div>
+                  )}
+                </form>
+              </div>
+
+              {/* Assignments Panel */}
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center">
+                      <GraduationCap className="w-4 h-4 text-indigo-600" />
+                    </div>
+                    <div>
+                      <h2 className="font-bold text-slate-800">Assignments</h2>
+                      <p className="text-xs text-slate-400">Toggle completion, add new tasks</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setShowAddAsg(v => !v)}
+                    className="flex items-center gap-1.5 text-sm font-semibold text-indigo-600 hover:bg-indigo-50 px-3 py-2 rounded-xl transition-all">
+                    <PlusCircle className="w-4 h-4" /> Add
+                  </button>
+                </div>
+
+                {showAddAsg && (
+                  <form onSubmit={handleAddAsg}
+                    className="px-6 py-4 border-b border-slate-100 bg-indigo-50/40 flex flex-wrap gap-3 items-end">
+                    <div className="flex-1 min-w-40">
+                      <label className="text-xs font-semibold text-slate-600 block mb-1">Title</label>
+                      <input value={newAsgTitle} onChange={e => setNewAsgTitle(e.target.value)}
+                        placeholder="Assignment title"
+                        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+                    </div>
+                    <div className="w-40">
+                      <label className="text-xs font-semibold text-slate-600 block mb-1">Due Date</label>
+                      <input type="date" value={newAsgDue} onChange={e => setNewAsgDue(e.target.value)}
+                        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+                    </div>
+                    <button type="submit" disabled={addAsgLoading}
+                      className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-all disabled:opacity-60">
+                      {addAsgLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5" />} Save
+                    </button>
+                  </form>
+                )}
+
+                <div className="divide-y divide-slate-100">
+                  {asgLoading ? (
+                    <div className="py-6 text-center text-slate-400 text-sm flex items-center justify-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Loading...
+                    </div>
+                  ) : assignments.length === 0 ? (
+                    <div className="py-6 text-center text-slate-400 text-sm">No assignments. Click + Add to create one.</div>
+                  ) : assignments.map(asg => {
+                    const overdue = !asg.is_completed && new Date(asg.due_date) < now;
+                    return (
+                      <div key={asg.id} className={`flex items-start gap-4 px-6 py-4 ${overdue ? "bg-red-50/40" : ""}`}>
+                        <button onClick={() => handleToggle(asg)} disabled={toggleLoading === asg.id}
+                          className="shrink-0 mt-0.5 text-indigo-600 hover:text-indigo-800 transition-all">
+                          {toggleLoading === asg.id
+                            ? <Loader2 className="w-5 h-5 animate-spin" />
+                            : asg.is_completed
+                              ? <CheckSquare2 className="w-5 h-5 text-teal-500" />
+                              : <Square className="w-5 h-5" />}
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <p className={`text-sm font-semibold ${asg.is_completed ? "line-through text-slate-400" : "text-slate-800"}`}>
+                            {asg.assignment_title}
+                          </p>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            {asg.subject ?? specialty} · Due: {asg.due_date}
+                            {overdue && <span className="ml-2 text-red-500 font-semibold">Overdue</span>}
+                          </p>
+                          {asg.student_reason && (
+                            <p className="text-xs text-indigo-600 mt-1.5 italic bg-indigo-50 rounded-lg px-3 py-1.5">
+                              💬 Student: &quot;{asg.student_reason}&quot;
+                            </p>
+                          )}
                         </div>
-                      </td>
-                      <td className="px-4 py-3.5">
-                        <RiskBadge level={student.riskLevel} />
-                      </td>
-                      <td className="px-4 py-3.5 text-center">
-                        <input
-                          type="number"
-                          min={0}
-                          max={100}
-                          value={getMarks(student.id, student.subjectMarks?.marks ?? 0)}
-                          onChange={(e) => handleEdit(student.id, "marks", Number(e.target.value))}
-                          className={`w-20 text-center py-1.5 px-2 rounded-lg border text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-amber-300 transition-all ${
-                            isEdited ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-200 bg-slate-50 text-slate-700"
-                          }`}
-                        />
-                      </td>
-                      <td className="px-4 py-3.5 text-center">
-                        <input
-                          type="number"
-                          min={0}
-                          max={100}
-                          value={getAttendance(student.id, student.attendancePercentage)}
-                          onChange={(e) => handleEdit(student.id, "attendance", Number(e.target.value))}
-                          className={`w-20 text-center py-1.5 px-2 rounded-lg border text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-amber-300 transition-all ${
-                            isEdited ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-200 bg-slate-50 text-slate-700"
-                          }`}
-                        />
-                      </td>
-                      <td className="px-4 py-3.5 text-center">
-                        <span className={`text-base font-bold ${
-                          student.riskLevel === "High" ? "text-red-600" :
-                          student.riskLevel === "Medium" ? "text-amber-600" : "text-teal-600"
+                        <span className={`text-xs font-bold px-2.5 py-1 rounded-full shrink-0 ${
+                          asg.is_completed ? "bg-teal-100 text-teal-700" :
+                          overdue ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
                         }`}>
-                          {student.overallRiskScore}
+                          {asg.is_completed ? "Done" : overdue ? "Overdue" : "Pending"}
                         </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
 
-        {saved && (
-          <div className="mt-4 bg-teal-50 border border-teal-200 text-teal-700 text-sm rounded-xl px-4 py-3 flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4" />
-            All changes saved successfully. Student risk scores will be recalculated.
-          </div>
-        )}
+              {/* Hint card */}
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2">
+                  <BarChart3 className="w-4 h-4 text-amber-500" /> How the Write-Lock Works
+                </h3>
+                <p className="text-sm text-slate-500">
+                  Your account&apos;s <code className="bg-slate-100 px-1 rounded text-xs">subject_specialty</code> is <strong className="text-amber-600">&quot;{specialty ?? "not set"}&quot;</strong>.
+                  When you submit, the server reads this value and updates only <code className="bg-slate-100 px-1 rounded text-xs">{specialty ?? "?"}_marks</code> and <code className="bg-slate-100 px-1 rounded text-xs">{specialty ?? "?"}_attendance</code> — no other subject&apos;s data can be overwritten.
+                </p>
+              </div>
+            </div>
+          )}
+        </main>
       </div>
     </div>
   );

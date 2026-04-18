@@ -762,10 +762,10 @@ export const departmentStats = {
 
 // ─── Auth Helper ────────────────────────────────────────────
 export const AUTH_ROLES = [
-  { role: "student", label: "Student", email: "student@demo.edu", password: "demo123", redirectTo: "/student" },
-  { role: "mentor", label: "Faculty Mentor", email: "mentor@demo.edu", password: "demo123", redirectTo: "/mentor" },
-  { role: "teacher", label: "Subject Teacher", email: "teacher@demo.edu", password: "demo123", redirectTo: "/teacher" },
-  { role: "coordinator", label: "Academic Coordinator", email: "coordinator@demo.edu", password: "demo123", redirectTo: "/coordinator" },
+  { role: "student", label: "Student", email: "arjun.verma@student.edu", password: "demo123", redirectTo: "/student" },
+  { role: "mentor", label: "Faculty Mentor", email: "priya.sharma@college.edu", password: "demo123", redirectTo: "/mentor" },
+  { role: "teacher", label: "Subject Teacher", email: "anita.patel@college.edu", password: "demo123", redirectTo: "/teacher" },
+  { role: "coordinator", label: "Academic Coordinator", email: "rajesh.mehta@college.edu", password: "demo123", redirectTo: "/coordinator" },
 ] as const;
 
 export type AuthRole = (typeof AUTH_ROLES)[number]["role"];
