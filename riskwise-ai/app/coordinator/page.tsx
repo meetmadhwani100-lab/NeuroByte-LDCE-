@@ -10,7 +10,7 @@ import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend,
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
 } from "recharts";
-import { allStudents, coordinator, departmentStats } from "@/data/mock";
+import { getCoordinatorDashboardData, createUserInPlatform } from "@/actions/coordinatorActions";
 import { supabase } from "@/lib/Client";
 import { RiskBadge } from "@/components/RiskBadge";
 
@@ -30,6 +30,16 @@ export default function CoordinatorDashboard() {
   const [page, setPage] = useState(1);
   const [sortBy, setSortBy] = useState<"risk" | "name" | "attendance">("risk");
 
+  const [liveStudents, setLiveStudents] = useState<any[]>([]);
+  const [liveStats, setLiveStats] = useState<any>(null);
+  const [coordinatorName, setCoordinatorName] = useState("Coordinator");
+
+  // Add User Form State
+  const [newUser, setNewUser] = useState({ name: "", email: "", role: "STUDENT" });
+  const [formState, setFormState] = useState<{ loading: boolean; error: string | null; success: string | null }>({
+    loading: false, error: null, success: null
+  });
+
   useEffect(() => {
     const enforceSecurity = async () => {
       const { data: { session } } = await supabase.auth.getSession();
@@ -39,7 +49,7 @@ export default function CoordinatorDashboard() {
       }
       const { data: userData } = await supabase
         .from('users')
-        .select('role')
+        .select('role, full_name')
         .eq('id', session.user.id)
         .single();
 
@@ -47,15 +57,25 @@ export default function CoordinatorDashboard() {
         router.push('/login');
         return;
       }
+      setCoordinatorName(userData.full_name || "Coordinator");
+
+      try {
+        const { allStudents, departmentStats } = await getCoordinatorDashboardData();
+        setLiveStudents(allStudents);
+        setLiveStats(departmentStats);
+      } catch (err) {
+        console.error("Dashboard failed to initialize", err);
+      }
+
       setIsAuthorized(true);
     };
     enforceSecurity();
   }, [router]);
 
   const pieData = [
-    { name: "High Risk", value: departmentStats.highRisk, color: RISK_COLORS.High },
-    { name: "Medium Risk", value: departmentStats.mediumRisk, color: RISK_COLORS.Medium },
-    { name: "Low Risk", value: departmentStats.lowRisk, color: RISK_COLORS.Low },
+    { name: "High Risk", value: liveStats?.highRisk ?? 0, color: RISK_COLORS.High },
+    { name: "Medium Risk", value: liveStats?.mediumRisk ?? 0, color: RISK_COLORS.Medium },
+    { name: "Low Risk", value: liveStats?.lowRisk ?? 0, color: RISK_COLORS.Low },
   ];
 
   // Score distribution
@@ -67,7 +87,7 @@ export default function CoordinatorDashboard() {
       { range: "61–80", count: 0 },
       { range: "81–100", count: 0 },
     ];
-    allStudents.forEach((s) => {
+    liveStudents.forEach((s) => {
       if (s.overallRiskScore <= 20) buckets[0].count++;
       else if (s.overallRiskScore <= 40) buckets[1].count++;
       else if (s.overallRiskScore <= 60) buckets[2].count++;
@@ -75,10 +95,10 @@ export default function CoordinatorDashboard() {
       else buckets[4].count++;
     });
     return buckets;
-  }, []);
+  }, [liveStudents]);
 
   const filtered = useMemo(() => {
-    let result = allStudents;
+    let result = liveStudents;
     if (filterRisk !== "All") result = result.filter((s) => s.riskLevel === filterRisk);
     if (searchQuery) {
       result = result.filter(
@@ -91,13 +111,35 @@ export default function CoordinatorDashboard() {
     else if (sortBy === "name") result = [...result].sort((a, b) => a.studentName.localeCompare(b.studentName));
     else if (sortBy === "attendance") result = [...result].sort((a, b) => a.attendancePercentage - b.attendancePercentage);
     return result;
-  }, [searchQuery, filterRisk, sortBy]);
+  }, [liveStudents, searchQuery, filterRisk, sortBy]);
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
-  if (!isAuthorized) {
-    return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-slate-500 font-medium">Verifying secure access...</div>;
+  const handleCreateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUser.name.trim() || !newUser.email.trim()) {
+      setFormState({ loading: false, error: "Name and email are required.", success: null });
+      return;
+    }
+    setFormState({ loading: true, error: null, success: null });
+    const res = await createUserInPlatform(newUser.name, newUser.email, newUser.role);
+    if (res.success) {
+      setFormState({ loading: false, error: null, success: res.message || "User created successfully." });
+      setNewUser({ name: "", email: "", role: "STUDENT" });
+      // Re-fetch stats so the new user displays if they are a student
+      if (newUser.role === "STUDENT") {
+        const { allStudents, departmentStats } = await getCoordinatorDashboardData();
+        setLiveStudents(allStudents);
+        setLiveStats(departmentStats);
+      }
+    } else {
+      setFormState({ loading: false, error: res.error || "Failed", success: null });
+    }
+  };
+
+  if (!isAuthorized || !liveStats) {
+    return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-slate-500 font-medium">Loading department data...</div>;
   }
 
   return (
@@ -116,9 +158,9 @@ export default function CoordinatorDashboard() {
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2 bg-purple-50 border border-purple-100 rounded-xl px-3 py-2">
               <div className="w-6 h-6 rounded-full bg-gradient-to-br from-purple-400 to-pink-300 flex items-center justify-center text-white text-xs font-bold">
-                {coordinator.name[0]}
+                {coordinatorName[0]}
               </div>
-              <span className="text-sm font-medium text-purple-700">{coordinator.name}</span>
+              <span className="text-sm font-medium text-purple-700">{coordinatorName}</span>
             </div>
             <button
               onClick={() => router.push("/login")}
@@ -135,7 +177,7 @@ export default function CoordinatorDashboard() {
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-slate-900">Department Academic Overview</h1>
           <p className="text-slate-500 text-sm mt-1">
-            Comprehensive view of all {departmentStats.totalStudents} students. Sorted by highest risk by default.
+            Comprehensive view of all {liveStats.totalStudents} students. Sorted by highest risk by default.
           </p>
         </div>
 
@@ -144,15 +186,15 @@ export default function CoordinatorDashboard() {
           {[
             {
               label: "Dept. Risk Score",
-              value: departmentStats.departmentOverallRisk,
+              value: liveStats.departmentOverallRisk,
               sub: "/ 100",
-              color: departmentStats.departmentOverallRisk > 65 ? "text-red-600" : departmentStats.departmentOverallRisk > 35 ? "text-amber-600" : "text-teal-600",
-              bg: departmentStats.departmentOverallRisk > 65 ? "bg-red-50 border-red-200" : "bg-amber-50 border-amber-200",
+              color: liveStats.departmentOverallRisk > 65 ? "text-red-600" : liveStats.departmentOverallRisk > 35 ? "text-amber-600" : "text-teal-600",
+              bg: liveStats.departmentOverallRisk > 65 ? "bg-red-50 border-red-200" : "bg-amber-50 border-amber-200",
               icon: <Activity className="w-5 h-5" />,
             },
             {
               label: "Total Students",
-              value: departmentStats.totalStudents,
+              value: liveStats.totalStudents,
               sub: "enrolled",
               color: "text-indigo-600",
               bg: "bg-indigo-50 border-indigo-200",
@@ -160,7 +202,7 @@ export default function CoordinatorDashboard() {
             },
             {
               label: "High Risk Students",
-              value: departmentStats.highRisk,
+              value: liveStats.highRisk,
               sub: "need intervention",
               color: "text-red-600",
               bg: "bg-red-50 border-red-200",
@@ -168,10 +210,10 @@ export default function CoordinatorDashboard() {
             },
             {
               label: "Avg Attendance",
-              value: `${departmentStats.avgAttendance}%`,
+              value: `${liveStats.avgAttendance}%`,
               sub: "department-wide",
-              color: departmentStats.avgAttendance < 75 ? "text-red-600" : "text-teal-600",
-              bg: departmentStats.avgAttendance < 75 ? "bg-red-50 border-red-200" : "bg-teal-50 border-teal-200",
+              color: liveStats.avgAttendance < 75 ? "text-red-600" : "text-teal-600",
+              bg: liveStats.avgAttendance < 75 ? "bg-red-50 border-red-200" : "bg-teal-50 border-teal-200",
               icon: <TrendingUp className="w-5 h-5" />,
             },
           ].map((kpi) => (
@@ -184,6 +226,58 @@ export default function CoordinatorDashboard() {
               <div className="text-xs text-slate-500 font-medium">{kpi.label}</div>
             </div>
           ))}
+        </div>
+
+        {/* Add User Form Section */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-8">
+          <div className="mb-4">
+            <h3 className="font-semibold text-slate-800 flex items-center gap-2">
+              <Users className="w-5 h-5 text-indigo-500" /> Quick Add Platform User
+            </h3>
+            <p className="text-xs text-slate-500 mt-1">
+              Add new Members. System will auto-generate temporary password: <span className="font-mono text-purple-600 bg-purple-50 px-1 rounded">[role]123</span>
+            </p>
+          </div>
+          
+          <form onSubmit={handleCreateUser} className="flex flex-col md:flex-row gap-4 items-end">
+            <div className="w-full md:w-1/3">
+              <label className="block text-xs font-semibold text-slate-600 mb-1.5 ml-1">Full Name</label>
+              <input type="text" placeholder="e.g. Rahul Sharma" required
+                value={newUser.name} onChange={e => setNewUser(p => ({ ...p, name: e.target.value }))}
+                className="w-full text-sm placeholder-slate-400 bg-slate-50 text-slate-800 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded-xl px-4 py-2.5 transition-all" />
+            </div>
+            <div className="w-full md:w-1/3">
+              <label className="block text-xs font-semibold text-slate-600 mb-1.5 ml-1">Email Address</label>
+              <input type="email" placeholder="e.g. rahul@student.edu" required
+                value={newUser.email} onChange={e => setNewUser(p => ({ ...p, email: e.target.value }))}
+                className="w-full text-sm placeholder-slate-400 bg-slate-50 text-slate-800 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded-xl px-4 py-2.5 transition-all" />
+            </div>
+            <div className="w-full md:w-1/4">
+              <label className="block text-xs font-semibold text-slate-600 mb-1.5 ml-1">System Role</label>
+              <select value={newUser.role} onChange={e => setNewUser(p => ({ ...p, role: e.target.value }))}
+                className="w-full text-sm bg-slate-50 text-slate-800 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded-xl px-4 py-2.5 transition-all appearance-none cursor-pointer">
+                <option value="STUDENT">Student</option>
+                <option value="TEACHER">Subject Teacher</option>
+                <option value="MENTOR">Faculty Mentor</option>
+              </select>
+            </div>
+            <button disabled={formState.loading} type="submit" 
+              className="w-full md:w-auto mt-2 md:mt-0 font-semibold text-sm px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl shadow-sm transition-all text-center">
+              {formState.loading ? "Provisioning..." : "Add User"}
+            </button>
+          </form>
+
+          {/* Form Feedback Alerts */}
+          {formState.error && (
+            <div className="mt-4 p-3 bg-red-50 border border-red-200 text-red-600 text-sm rounded-xl font-medium animate-in fade-in slide-in-from-top-2">
+              🚨 {formState.error}
+            </div>
+          )}
+          {formState.success && (
+            <div className="mt-4 p-3 bg-teal-50 border border-teal-200 text-teal-700 text-sm rounded-xl font-medium flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
+              <span>✅</span> {formState.success}
+            </div>
+          )}
         </div>
 
         {/* Charts Row */}
