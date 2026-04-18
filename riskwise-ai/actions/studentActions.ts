@@ -51,17 +51,35 @@ export async function getStudentDashboardData(studentUserId: string) {
     }
   }
 
-  // 2. Fetch Assignments safely (won't crash the page if columns are missing)
+  // 2. Fetch Assignments safely (Option B: Relational schema mapping)
   let safeAssignments = [];
   const { data: asgData, error: asgErr } = await supabase
     .from("student_assignments")
-    .select("id, assignment_title, subject, due_date, is_completed, student_reason")
+    .select(`
+      id,
+      is_completed,
+      student_reason,
+      assignments (
+        id,
+        assignment_title,
+        subject_name,
+        due_date
+      )
+    `)
     .eq("student_id", finalStudent.id);
     
   if (asgErr) {
     console.error("Safely ignoring assignments table error:", asgErr.message);
   } else if (asgData) {
-    safeAssignments = asgData;
+    // Flatten the relational data so the frontend doesn't need to be altered
+    safeAssignments = asgData.map((a: any) => ({
+      id: a.id,
+      is_completed: a.is_completed,
+      student_reason: a.student_reason,
+      assignment_title: a.assignments?.assignment_title || 'Untitled',
+      subject: a.assignments?.subject_name || null,
+      due_date: a.assignments?.due_date || 'N/A'
+    }));
   }
 
   // 3. Fetch Interventions safely
@@ -69,7 +87,8 @@ export async function getStudentDashboardData(studentUserId: string) {
   const { data: intData, error: intErr } = await supabase
     .from("interventions")
     .select("id, session_date, status, mentor_feedback")
-    .eq("student_id", finalStudent.id);
+    .eq("student_id", finalStudent.id)
+    .order("session_date", { ascending: false });
 
   if (intErr) {
     console.error("Safely ignoring interventions table error:", intErr.message);
@@ -77,11 +96,26 @@ export async function getStudentDashboardData(studentUserId: string) {
     safeInterventions = intData;
   }
 
+  // 4. Fetch Risk History for the Timeline Graph
+  let safeRiskHistory = [];
+  const { data: rhData, error: rhErr } = await supabase
+    .from("risk_history")
+    .select("recorded_date, risk_score")
+    .eq("student_id", finalStudent.id)
+    .order("recorded_date", { ascending: true }); // chronological order for recharts
+
+  if (rhErr) {
+    console.error("Safely ignoring risk_history table error:", rhErr.message);
+  } else if (rhData) {
+    safeRiskHistory = rhData;
+  }
+
   // Inject the safe relations into the final object
   return {
     ...finalStudent,
     student_assignments: safeAssignments,
     interventions: safeInterventions,
+    risk_history: safeRiskHistory
   };
 }
 

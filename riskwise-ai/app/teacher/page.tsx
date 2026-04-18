@@ -10,19 +10,10 @@ import {
 import { supabase } from "@/lib/Client";
 import {
   updateStudentSubjectData,
+  createBulkAssignment,
   getStudentAssignments,
   toggleAssignmentStatus,
-  createAssignment,
 } from "@/actions/teacherActions";
-
-type Assignment = {
-  id: string;
-  assignment_title: string;
-  subject: string | null;
-  due_date: string;
-  is_completed: boolean;
-  student_reason: string | null;
-};
 
 type DbStudent = {
   id: string;          // users.id (auth UID)
@@ -49,16 +40,18 @@ export default function TeacherDashboard() {
   const [formSuccess, setFormSuccess] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
+  // bulk broadcast
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkTitle, setBulkTitle] = useState("");
+  const [bulkDue, setBulkDue] = useState("");
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkSuccess, setBulkSuccess] = useState<string | null>(null);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+
   // assignments
-  const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [assignments, setAssignments] = useState<any[]>([]);
   const [asgLoading, setAsgLoading] = useState(false);
   const [toggleLoading, setToggleLoading] = useState<string | null>(null);
-
-  // add assignment
-  const [showAddAsg, setShowAddAsg] = useState(false);
-  const [newAsgTitle, setNewAsgTitle] = useState("");
-  const [newAsgDue, setNewAsgDue] = useState("");
-  const [addAsgLoading, setAddAsgLoading] = useState(false);
 
   // ── Bouncer ──────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -110,11 +103,13 @@ export default function TeacherDashboard() {
   }, [router]);
 
   // ── Load assignments ───────────────────────────────────────────────────────
-  const loadAssignments = useCallback(async (dbId: string) => {
+  const loadAssignments = useCallback(async (sUid: string, tUid: string) => {
     setAsgLoading(true);
     try {
-      const data = await getStudentAssignments(dbId);
-      setAssignments(data as Assignment[]);
+      const data = await getStudentAssignments(sUid, tUid);
+      setAssignments(data);
+    } catch(e) {
+      console.error(e);
     } finally {
       setAsgLoading(false);
     }
@@ -125,7 +120,9 @@ export default function TeacherDashboard() {
     setMarks(""); setAttendance("");
     setFormSuccess(false); setFormError(null);
     setAssignments([]);
-    loadAssignments(s.id);
+    if (teacherUserId) {
+      loadAssignments(s.id, teacherUserId);
+    }
   };
 
   // ── Submit marks ───────────────────────────────────────────────────────────
@@ -152,28 +149,30 @@ export default function TeacherDashboard() {
     }
   };
 
-  // ── Toggle assignment ──────────────────────────────────────────────────────
-  const handleToggle = async (asg: Assignment) => {
-    setToggleLoading(asg.id);
+  const handleBulkSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bulkTitle.trim() || !bulkDue) return;
+    setBulkLoading(true); setBulkSuccess(null); setBulkError(null);
     try {
-      await toggleAssignmentStatus(asg.id, !asg.is_completed);
-      setAssignments(prev => prev.map(a => a.id === asg.id ? { ...a, is_completed: !a.is_completed } : a));
+      const res = await createBulkAssignment(teacherUserId, bulkTitle.trim(), bulkDue);
+      setBulkSuccess(`Assignment successfully assigned to ${res.count} active students.`);
+      setBulkTitle(""); setBulkDue("");
+    } catch (err: unknown) {
+      setBulkError(err instanceof Error ? err.message : "Broadcast failed.");
     } finally {
-      setToggleLoading(null);
+      setBulkLoading(false);
     }
   };
 
-  // ── Add assignment ─────────────────────────────────────────────────────────
-  const handleAddAsg = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedStudent || !newAsgTitle.trim() || !newAsgDue) return;
-    setAddAsgLoading(true);
+  const handleToggleAsg = async (asgId: string, currentStatus: boolean) => {
+    setToggleLoading(asgId);
     try {
-      await createAssignment(teacherUserId, selectedStudent.id, newAsgTitle.trim(), newAsgDue);
-      setNewAsgTitle(""); setNewAsgDue(""); setShowAddAsg(false);
-      await loadAssignments(selectedStudent.id);
+      await toggleAssignmentStatus(asgId, !currentStatus);
+      setAssignments(prev => prev.map(a => a.id === asgId ? { ...a, is_completed: !currentStatus } : a));
+    } catch(e) {
+      console.error("Toggle error", e);
     } finally {
-      setAddAsgLoading(false);
+      setToggleLoading(null);
     }
   };
 
@@ -235,11 +234,17 @@ export default function TeacherDashboard() {
       <div className="flex flex-1 max-w-screen-xl mx-auto w-full overflow-hidden">
 
         {/* LEFT: Student list */}
-        <aside className="w-72 shrink-0 border-r border-slate-200 bg-white flex flex-col">
-          <div className="px-4 py-4 border-b border-slate-100">
+        <aside className="w-72 shrink-0 border-r border-slate-200 bg-white flex flex-col z-10">
+          <div className="px-4 py-4 border-b border-slate-100 flex flex-col gap-3">
             <h2 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
               <Users className="w-4 h-4 text-amber-500" /> Your Students
             </h2>
+            <button
+              onClick={() => setShowBulkModal(true)}
+              className="flex items-center justify-center gap-2 w-full bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold py-2.5 rounded-lg transition-all"
+            >
+              <Bell className="w-3.5 h-3.5" /> Broadcast Assignment
+            </button>
           </div>
           <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
             {students.length === 0 ? (
@@ -262,11 +267,11 @@ export default function TeacherDashboard() {
         </aside>
 
         {/* RIGHT: Main content */}
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="flex-1 overflow-y-auto p-6 relative">
           {!selectedStudent ? (
             <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-3">
               <Users className="w-12 h-12 opacity-20" />
-              <p className="text-sm">Select a student from the sidebar to enter their records.</p>
+              <p className="text-sm">Select a student from the sidebar to enter individual records.</p>
             </div>
           ) : (
             <div className="max-w-2xl space-y-6">
@@ -336,72 +341,50 @@ export default function TeacherDashboard() {
                 </form>
               </div>
 
-              {/* Assignments Panel */}
+              {/* Individual Assignments Checkbox List */}
               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                 <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center">
-                      <GraduationCap className="w-4 h-4 text-indigo-600" />
+                      <CheckSquare2 className="w-4 h-4 text-indigo-600" />
                     </div>
                     <div>
-                      <h2 className="font-bold text-slate-800">Assignments</h2>
-                      <p className="text-xs text-slate-400">Toggle completion, add new tasks</p>
+                      <h2 className="font-bold text-slate-800">Tasks from You</h2>
+                      <p className="text-xs text-slate-400">Track tasks you broadcasted to this student.</p>
                     </div>
                   </div>
-                  <button onClick={() => setShowAddAsg(v => !v)}
-                    className="flex items-center gap-1.5 text-sm font-semibold text-indigo-600 hover:bg-indigo-50 px-3 py-2 rounded-xl transition-all">
-                    <PlusCircle className="w-4 h-4" /> Add
-                  </button>
+                  <span className="text-xs font-bold bg-indigo-50 text-indigo-700 px-2 py-1 rounded-lg">
+                    {assignments.length} Total
+                  </span>
                 </div>
-
-                {showAddAsg && (
-                  <form onSubmit={handleAddAsg}
-                    className="px-6 py-4 border-b border-slate-100 bg-indigo-50/40 flex flex-wrap gap-3 items-end">
-                    <div className="flex-1 min-w-40">
-                      <label className="text-xs font-semibold text-slate-600 block mb-1">Title</label>
-                      <input value={newAsgTitle} onChange={e => setNewAsgTitle(e.target.value)}
-                        placeholder="Assignment title"
-                        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
-                    </div>
-                    <div className="w-40">
-                      <label className="text-xs font-semibold text-slate-600 block mb-1">Due Date</label>
-                      <input type="date" value={newAsgDue} onChange={e => setNewAsgDue(e.target.value)}
-                        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
-                    </div>
-                    <button type="submit" disabled={addAsgLoading}
-                      className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-all disabled:opacity-60">
-                      {addAsgLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5" />} Save
-                    </button>
-                  </form>
-                )}
 
                 <div className="divide-y divide-slate-100">
                   {asgLoading ? (
-                    <div className="py-6 text-center text-slate-400 text-sm flex items-center justify-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" /> Loading...
+                    <div className="py-6 flex items-center justify-center text-slate-400 gap-2 text-sm">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Loading tasks...
                     </div>
                   ) : assignments.length === 0 ? (
-                    <div className="py-6 text-center text-slate-400 text-sm">No assignments. Click + Add to create one.</div>
-                  ) : assignments.map(asg => {
-                    const overdue = !asg.is_completed && new Date(asg.due_date) < now;
-                    return (
-                      <div key={asg.id} className={`flex items-start gap-4 px-6 py-4 ${overdue ? "bg-red-50/40" : ""}`}>
-                        <button onClick={() => handleToggle(asg)} disabled={toggleLoading === asg.id}
-                          className="shrink-0 mt-0.5 text-indigo-600 hover:text-indigo-800 transition-all">
-                          {toggleLoading === asg.id
-                            ? <Loader2 className="w-5 h-5 animate-spin" />
-                            : asg.is_completed
-                              ? <CheckSquare2 className="w-5 h-5 text-teal-500" />
+                    <div className="py-6 text-center text-sm text-slate-400">
+                      You have not assigned any tasks to this student yet.
+                    </div>
+                  ) : (
+                    assignments.map(asg => (
+                      <div key={asg.id} className={`flex items-start gap-4 px-6 py-4 hover:bg-slate-50 transition-colors ${asg.is_completed ? 'bg-teal-50/10' : ''}`}>
+                        <button 
+                          onClick={() => handleToggleAsg(asg.id, asg.is_completed)} 
+                          disabled={toggleLoading === asg.id}
+                          className="shrink-0 mt-0.5 text-indigo-600 hover:text-indigo-800 disabled:opacity-50 transition-all">
+                          {toggleLoading === asg.id 
+                            ? <Loader2 className="w-5 h-5 animate-spin" /> 
+                            : asg.is_completed 
+                              ? <CheckSquare2 className="w-5 h-5 text-teal-600" /> 
                               : <Square className="w-5 h-5" />}
                         </button>
                         <div className="flex-1 min-w-0">
-                          <p className={`text-sm font-semibold ${asg.is_completed ? "line-through text-slate-400" : "text-slate-800"}`}>
+                          <p className={`text-sm font-semibold ${asg.is_completed ? 'line-through text-slate-400' : 'text-slate-800'}`}>
                             {asg.assignment_title}
                           </p>
-                          <p className="text-xs text-slate-400 mt-0.5">
-                            {asg.subject ?? specialty} · Due: {asg.due_date}
-                            {overdue && <span className="ml-2 text-red-500 font-semibold">Overdue</span>}
-                          </p>
+                          <p className="text-xs text-slate-400 mt-0.5">Due: {asg.due_date}</p>
                           {asg.student_reason && (
                             <p className="text-xs text-indigo-600 mt-1.5 italic bg-indigo-50 rounded-lg px-3 py-1.5">
                               💬 Student: &quot;{asg.student_reason}&quot;
@@ -409,14 +392,13 @@ export default function TeacherDashboard() {
                           )}
                         </div>
                         <span className={`text-xs font-bold px-2.5 py-1 rounded-full shrink-0 ${
-                          asg.is_completed ? "bg-teal-100 text-teal-700" :
-                          overdue ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+                          asg.is_completed ? "bg-teal-100 text-teal-700" : "bg-amber-100 text-amber-700"
                         }`}>
-                          {asg.is_completed ? "Done" : overdue ? "Overdue" : "Pending"}
+                          {asg.is_completed ? "Done" : "Pending"}
                         </span>
                       </div>
-                    );
-                  })}
+                    ))
+                  )}
                 </div>
               </div>
 
@@ -434,6 +416,69 @@ export default function TeacherDashboard() {
           )}
         </main>
       </div>
+
+      {/* Broadcast Modal Overlay */}
+      {showBulkModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden border border-slate-200">
+            <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center">
+                  <Bell className="w-4 h-4 text-indigo-600" />
+                </div>
+                <div>
+                  <h2 className="font-bold text-slate-800">Broadcast Class Assignment</h2>
+                  <p className="text-xs text-slate-400">Instantly assign a new task to all active students.</p>
+                </div>
+              </div>
+              <button onClick={() => setShowBulkModal(false)} className="text-slate-400 hover:text-slate-600">
+                &times;
+              </button>
+            </div>
+            
+            <form onSubmit={handleBulkSubmit} className="p-6 space-y-5 bg-white">
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Assignment Title</label>
+                  <input
+                    type="text" placeholder="e.g. Chapter 4 Lab Report"
+                    value={bulkTitle} onChange={e => { setBulkTitle(e.target.value); setBulkSuccess(null); setBulkError(null); }}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-all placeholder:text-slate-400"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Due Date</label>
+                  <input
+                    type="date"
+                    value={bulkDue} onChange={e => { setBulkDue(e.target.value); setBulkSuccess(null); setBulkError(null); }}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-all"
+                    required
+                  />
+                </div>
+              </div>
+
+              <button type="submit" disabled={bulkLoading || !specialty}
+                className="w-full flex items-center justify-center gap-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl shadow-md transition-all active:scale-[0.98]">
+                {bulkLoading ? <><Loader2 className="w-4 h-4 animate-spin" />Broadcasting...</> : <><PlusCircle className="w-4 h-4" />Broadcast to All Students</>}
+              </button>
+
+              {bulkSuccess && (
+                <div className="flex items-center gap-3 bg-teal-50 border border-teal-200 text-teal-700 rounded-xl px-4 py-3.5 text-sm">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <p className="font-semibold">{bulkSuccess}</p>
+                </div>
+              )}
+              {bulkError && (
+                <div className="flex items-center gap-3 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3.5 text-sm">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <p>{bulkError}</p>
+                </div>
+              )}
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

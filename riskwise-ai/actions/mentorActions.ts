@@ -5,21 +5,44 @@ import { supabase } from "@/lib/Client";
 
 // ── getAssignedStudents ───────────────────────────────────────────────────────
 /**
- * Returns all users with role=STUDENT for the mentor list sidebar.
+ * Returns all users with role=STUDENT for the mentor list sidebar,
+ * alongside their risk metrics.
  */
 export async function getAssignedStudents(_mentorId: string) {
-  const { data: users, error } = await supabase
+  // 1. Fetch users
+  const { data: users, error: uErr } = await supabase
     .from("users")
     .select("id, full_name, email")
     .eq("role", "STUDENT");
 
-  if (error) throw new Error(error.message);
+  if (uErr) throw new Error(uErr.message);
 
-  return (users ?? []).map(u => ({
-    id: u.id,
-    studentName: u.full_name || u.email || "Unknown Student",
-    email: u.email,
-  }));
+  // 2. Fetch students table to get risk scores
+  const { data: students, error: sErr } = await supabase
+    .from("students")
+    .select("user_id, current_risk_score, risk_category");
+
+  if (sErr) throw new Error(sErr.message);
+
+  const riskMap = new Map();
+  students?.forEach(s => riskMap.set(s.user_id, s));
+
+  const list = (users ?? []).map(u => {
+    const sData = riskMap.get(u.id);
+    return {
+      id: u.id,
+      studentName: u.full_name || u.email || "Unknown Student",
+      email: u.email,
+      current_risk_score: sData?.current_risk_score ?? 0,
+      risk_category: sData?.risk_category ?? "Low"
+    };
+  });
+
+  // Sort: High -> Medium -> Low
+  const order = { "High": 3, "Medium": 2, "Low": 1 };
+  list.sort((a, b) => order[b.risk_category as keyof typeof order] - order[a.risk_category as keyof typeof order]);
+
+  return list;
 }
 
 // ── getStudentDetails ─────────────────────────────────────────────────────────
@@ -32,30 +55,23 @@ export async function getStudentDetails(studentUserId: string) {
   const { data: student, error } = await supabase
     .from("students")
     .select(`
-      id,
-      current_risk_score,
-      risk_category,
-      top_risk_reasons,
-      general_feedback,
-      math_marks, math_attendance,
-      physics_marks, physics_attendance,
-      cs_marks, cs_attendance,
-      english_marks, english_attendance,
-      biology_marks, biology_attendance,
+      *,
       student_assignments (
         id,
-        assignment_title,
-        subject,
-        due_date,
         is_completed,
-        student_reason
+        student_reason,
+        assignments (
+          id,
+          assignment_title,
+          subject_name,
+          due_date
+        )
       ),
       interventions (
         id,
         session_date,
         status,
-        mentor_feedback,
-        pre_intervention_score
+        mentor_feedback
       )
     `)
     .eq("user_id", studentUserId)
@@ -64,6 +80,18 @@ export async function getStudentDetails(studentUserId: string) {
   if (error) {
     if (error.code === "PGRST116") return null;
     throw new Error(error.message);
+  }
+
+  // Map the relational assignments back to flat format so UI works perfectly
+  if (student && student.student_assignments) {
+    student.student_assignments = student.student_assignments.map((a: any) => ({
+      id: a.id,
+      is_completed: a.is_completed,
+      student_reason: a.student_reason,
+      assignment_title: a.assignments?.assignment_title || 'Untitled',
+      subject: a.assignments?.subject_name || 'General',
+      due_date: a.assignments?.due_date || 'N/A'
+    })) as any;
   }
 
   return student;

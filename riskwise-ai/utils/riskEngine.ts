@@ -12,63 +12,88 @@ export type RiskResult = {
  * Algorithm used to calculate the risk score fallback based on attendance, marks, and assignments.
  * Fetches data directly using the studentId.
  */
-export async function calculateRiskScore(studentId: string): Promise<RiskResult> {
+export async function calculateRiskScore(studentDbId: string): Promise<RiskResult> {
   let score = 0;
   const reasons: string[] = [];
 
-  // 1. Fetch academic records to calculate average attendance and marks
-  const { data: records, error: recordsError } = await supabase
-    .from("academic_records")
-    .select("attendance_percentage, internal_marks")
-    .eq("student_id", studentId);
+  // 1. Fetch academic records directly from the students table (Flat schema)
+  const { data: student, error: studentError } = await supabase
+    .from("students")
+    .select("math_marks, math_attendance, physics_marks, physics_attendance, cs_marks, cs_attendance, english_marks, english_attendance, biology_marks, biology_attendance")
+    .eq("id", studentDbId)
+    .single();
 
-  if (recordsError) throw new Error("Failed to fetch academic records");
+  if (studentError) {
+    console.error("RiskEngine: Failed to fetch student records", studentError);
+  }
 
-  if (records && records.length > 0) {
+  if (student) {
     let totalAttendance = 0;
     let totalMarks = 0;
+    let subjectsCount = 0;
 
-    records.forEach((r) => {
-      totalAttendance += r.attendance_percentage;
-      totalMarks += r.internal_marks;
+    const subjects = ["math", "physics", "cs", "english", "biology"];
+    subjects.forEach((sub) => {
+      const marks = student[`${sub}_marks` as keyof typeof student];
+      const att = student[`${sub}_attendance` as keyof typeof student];
+      
+      // If the subject has actual data written to it
+      if (marks !== null && att !== null) {
+        if (Number(marks) > 0 || Number(att) > 0) {
+          totalAttendance += Number(att);
+          totalMarks += Number(marks);
+          subjectsCount++;
+        }
+      }
     });
 
-    const avgAttendance = totalAttendance / records.length;
-    const avgMarks = totalMarks / records.length;
+    if (subjectsCount > 0) {
+      const avgAttendance = totalAttendance / subjectsCount;
+      const avgMarks = totalMarks / subjectsCount;
 
-    // Apply attendance rules
-    if (avgAttendance < 60) {
-      score += 50;
-      reasons.push(`Critical: Average attendance is severely low (${Math.round(avgAttendance)}%).`);
-    } else if (avgAttendance < 75) {
-      score += 30;
-      reasons.push(`Warning: Average attendance is below 75% (${Math.round(avgAttendance)}%).`);
-    }
+      // Apply attendance rules
+      if (avgAttendance < 60) {
+        score += 50;
+        reasons.push(`Critical: Average attendance is severely low (${Math.round(avgAttendance)}%).`);
+      } else if (avgAttendance < 75) {
+        score += 30;
+        reasons.push(`Warning: Average attendance is below 75% (${Math.round(avgAttendance)}%).`);
+      }
 
-    // Apply marks rules
-    if (avgMarks < 40) {
-      score += 20;
-      reasons.push(`Warning: Overall internal marks average is failing (${Math.round(avgMarks)}%).`);
+      // Apply marks rules
+      if (avgMarks < 40) {
+        score += 20;
+        reasons.push(`Warning: Overall internal marks average is failing (${Math.round(avgMarks)}%).`);
+      }
     }
   }
 
-  // 2. Fetch assignments to check for overdue/pending statuses
+  // 2. Fetch assignments to check for overdue statuses (Option B Relational Schema)
   const { data: assignments, error: assignmentsError } = await supabase
-    .from("assignments")
-    .select("status, due_date")
-    .eq("student_id", studentId)
-    .eq("status", "PENDING");
+    .from("student_assignments")
+    .select(`
+      is_completed,
+      assignments!inner (
+        due_date
+      )
+    `)
+    .eq("student_id", studentDbId)
+    .eq("is_completed", false);
 
-  if (assignmentsError) throw new Error("Failed to fetch assignments");
+  if (assignmentsError) {
+    console.error("RiskEngine: Failed to fetch assignments", assignmentsError);
+  }
 
   if (assignments && assignments.length > 0) {
     const now = new Date();
     let pastDueCount = 0;
 
-    assignments.forEach((assignment) => {
-      const dueDate = new Date(assignment.due_date);
-      if (dueDate < now) {
-        pastDueCount++;
+    assignments.forEach((a: any) => {
+      if (a.assignments?.due_date) {
+        const dueDate = new Date(a.assignments.due_date);
+        if (dueDate < now) {
+          pastDueCount++;
+        }
       }
     });
 
@@ -89,14 +114,14 @@ export async function calculateRiskScore(studentId: string): Promise<RiskResult>
     category = "Medium";
   }
 
-  // If score is high but no records found
-  if (score === 0 && (!records || records.length === 0)) {
+  // Formatting empty state
+  if (score === 0 && subjectsCount === 0 && (!assignments || assignments.length === 0)) {
     reasons.push("No academic data is currently available for evaluation.");
   } else if (score === 0) {
     reasons.push("Student is performing well with no notable risk factors.");
   }
 
-  // Optional: Update the student's risk profile in the database transparently
+  // 3. Update the student's risk profile in the database transparently
   await supabase
     .from("students")
     .update({
@@ -104,7 +129,16 @@ export async function calculateRiskScore(studentId: string): Promise<RiskResult>
       risk_category: category,
       top_risk_reasons: reasons.join(" | ")
     })
-    .eq("id", studentId);
+    .eq("id", studentDbId);
+
+  // 4. Force-log this calculation into risk_history so the dashboard chart populates!
+  await supabase
+    .from("risk_history")
+    .insert([{
+      student_id: studentDbId,
+      risk_score: score,
+      recorded_date: new Date().toISOString()
+    }]);
 
   return { score, category, reasons };
 }

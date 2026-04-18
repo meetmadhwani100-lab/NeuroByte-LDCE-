@@ -215,14 +215,29 @@ export default function MentorDashboard() {
             ) : filteredStudents.map(s => (
               <button key={s.id} onClick={() => handleSelectStudent(s)}
                 className={`w-full text-left px-4 py-3.5 hover:bg-teal-50 transition-all ${selectedStudent?.id === s.id ? "bg-teal-50 border-l-4 border-teal-400" : ""}`}>
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-teal-400 to-emerald-300 flex items-center justify-center text-white text-sm font-bold shrink-0">
-                    {s.studentName[0]}
+                <div className="flex justify-between items-center gap-2">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className={`w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0 ${
+                      (s as any).risk_category === 'High' ? 'bg-gradient-to-br from-red-500 to-rose-400' :
+                      (s as any).risk_category === 'Medium' ? 'bg-gradient-to-br from-amber-500 to-orange-400' :
+                      'bg-gradient-to-br from-teal-400 to-emerald-300'
+                    }`}>
+                      {s.studentName[0]}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-slate-800 text-sm truncate">{s.studentName}</p>
+                      <p className="text-xs text-slate-400 truncate">{s.email}</p>
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <p className="font-semibold text-slate-800 text-sm truncate">{s.studentName}</p>
-                    <p className="text-xs text-slate-400 truncate">{s.email}</p>
-                  </div>
+                  {(s as any).current_risk_score > 0 && (
+                    <div className={`shrink-0 flex items-center justify-center text-xs font-bold px-2 py-0.5 rounded-full border ${
+                      (s as any).risk_category === 'High' ? 'bg-red-50 text-red-700 border-red-200' :
+                      (s as any).risk_category === 'Medium' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                      'bg-teal-50 text-teal-700 border-teal-200'
+                    }`}>
+                      {(s as any).current_risk_score}
+                    </div>
+                  )}
                 </div>
               </button>
             ))}

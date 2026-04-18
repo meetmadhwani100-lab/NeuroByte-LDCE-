@@ -4,8 +4,11 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   ShieldCheck, ChevronRight, LogOut, AlertTriangle, Bell,
-  CheckCircle2, Loader2, ClipboardList, TrendingUp, BookOpen, Calendar,
+  CheckCircle2, Loader2, ClipboardList, TrendingUp, BookOpen, Calendar, MessageSquare
 } from "lucide-react";
+import {
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot
+} from "recharts";
 import { supabase } from "@/lib/Client";
 import {
   getStudentDashboardData,
@@ -42,6 +45,30 @@ type StudentRow = {
   [key: string]: unknown; // subject columns
   student_assignments: Assignment[];
   interventions: { id: string; session_date: string; status: string; mentor_feedback: string | null }[];
+  risk_history: { recorded_date: string; risk_score: number }[];
+};
+
+// ── Custom Tooltip for Recharts ───────────────────────────────────────────────
+const RiskTooltip = ({ active, payload, label }: any) => {
+  if (active && payload && payload.length) {
+    const data = payload[0].payload;
+    return (
+      <div className="bg-white p-3 border border-slate-200 rounded-xl shadow-xl text-sm min-w-[200px]">
+        <p className="font-bold text-slate-800 mb-1">{label}</p>
+        <p className={`font-semibold mb-1 ${data.score > 70 ? 'text-red-600' : data.score >= 40 ? 'text-amber-600' : 'text-teal-600'}`}>
+          Risk Score: {data.score}
+        </p>
+        {data.hasIntervention && (
+          <div className="mt-2 pt-2 border-t border-slate-100">
+            <p className="text-xs font-bold text-indigo-600 flex items-center gap-1">
+              <MessageSquare className="w-3 h-3"/> Mentor Session Logged
+            </p>
+          </div>
+        )}
+      </div>
+    );
+  }
+  return null;
 };
 
 export default function StudentDashboard() {
@@ -112,10 +139,26 @@ export default function StudentDashboard() {
     return m > 0 || a > 0;
   });
 
-  // Overdue incomplete assignments
   const overdueAssignments = (studentData?.student_assignments ?? []).filter(
     a => !a.is_completed && new Date(a.due_date) < now
   );
+
+  // Latest intervention feedback for the banner
+  const latestIntervention = (studentData?.interventions ?? []).find(inv => inv.mentor_feedback);
+
+  // Chart Data prep
+  const chartData = (studentData?.risk_history || []).map(rh => {
+    const dtStr = new Date(rh.recorded_date).toISOString().split('T')[0];
+    const intervention = (studentData?.interventions || []).find(inv => 
+      new Date(inv.session_date).toISOString().split('T')[0] === dtStr
+    );
+    
+    return {
+      date: new Date(rh.recorded_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+      score: rh.risk_score,
+      hasIntervention: !!intervention,
+    };
+  });
 
   const handleFeedbackSubmit = async () => {
     if (!studentData?.id || !feedbackText.trim()) return;
@@ -192,6 +235,24 @@ export default function StudentDashboard() {
           </div>
         )}
 
+        {/* Mentor Message Banner */}
+        {latestIntervention?.mentor_feedback && (
+          <div className="bg-indigo-600 rounded-2xl p-5 md:px-6 md:py-5 text-white shadow-xl shadow-indigo-200/50 flex flex-col md:flex-row items-start md:items-center gap-4 border border-indigo-500">
+            <div className="w-10 h-10 rounded-full bg-indigo-500 flex items-center justify-center shrink-0 border-2 border-indigo-400">
+              <MessageSquare className="w-5 h-5 text-white" />
+            </div>
+            <div className="flex-1">
+              <div className="flex flex-col md:flex-row md:items-center gap-1 md:gap-3 mb-1">
+                <h2 className="font-bold text-indigo-50">Message from your Mentor</h2>
+                <span className="text-xs bg-indigo-500/50 text-indigo-100 px-2 py-0.5 rounded-full font-semibold border border-indigo-400/50">
+                  {new Date(latestIntervention.session_date).toLocaleDateString()}
+                </span>
+              </div>
+              <p className="text-sm text-indigo-100 italic">&quot;{latestIntervention.mentor_feedback}&quot;</p>
+            </div>
+          </div>
+        )}
+
         {studentData && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
@@ -249,6 +310,61 @@ export default function StudentDashboard() {
 
             {/* ── RIGHT ────────────────────────────────────────────────────── */}
             <div className="lg:col-span-2 space-y-6">
+
+              {/* RISK HISTORY CHART */}
+              {chartData.length > 0 && (
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                  <div className="flex items-center gap-2 mb-6">
+                    <TrendingUp className="w-5 h-5 text-indigo-500" />
+                    <h3 className="font-semibold text-slate-800 text-sm uppercase tracking-wide">Risk Improvement History</h3>
+                  </div>
+                  <div className="h-64 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={chartData} margin={{ top: 10, right: 20, left: -20, bottom: 0 }}>
+                        <XAxis 
+                          dataKey="date" 
+                          stroke="#94a3b8" 
+                          fontSize={12} 
+                          tickLine={false} 
+                          axisLine={false}
+                          dy={10} 
+                        />
+                        <YAxis 
+                          stroke="#94a3b8" 
+                          fontSize={12} 
+                          tickLine={false} 
+                          axisLine={false} 
+                          domain={[0, 100]}
+                        />
+                        <Tooltip content={<RiskTooltip />} />
+                        <Line 
+                          type="monotone" 
+                          dataKey="score" 
+                          stroke="#6366f1" 
+                          strokeWidth={3} 
+                          dot={{ r: 4, strokeWidth: 2, fill: "#fff", stroke: "#6366f1" }}
+                          activeDot={{ r: 6, fill: "#6366f1", stroke: "#fff", strokeWidth: 2 }}
+                        />
+                        {/* Reference dots for mentor interventions */}
+                        {chartData.map((entry, index) => entry.hasIntervention && (
+                          <ReferenceDot 
+                            key={`ref_${index}`}
+                            x={entry.date} 
+                            y={entry.score} 
+                            r={8} 
+                            fill="#f59e0b" 
+                            stroke="#fff" 
+                            strokeWidth={2} 
+                          />
+                        ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="flex items-center justify-end gap-2 mt-4 text-xs font-semibold text-slate-500">
+                    <div className="w-3 h-3 rounded-full bg-amber-500" /> = Mentor Session
+                  </div>
+                </div>
+              )}
 
               {/* LOW ATTENDANCE ALERT */}
               {lowAttendanceSubjects.length > 0 && (
