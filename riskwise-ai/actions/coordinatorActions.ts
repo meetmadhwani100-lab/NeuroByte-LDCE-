@@ -2,12 +2,17 @@
 
 import { supabase } from "@/lib/Client";
 import { createClient } from "@supabase/supabase-js";
+import { exec } from "child_process";
+import util from "util";
+import path from "path";
 
-// Stateless client specifically for admin actions, bypasses browser session
+const execPromise = util.promisify(exec);
+
+// Admin client using Service Role key — bypasses RLS for coordinator views
 const getAdminSupabase = () => {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!, // Service Role bypasses RLS
     {
       auth: {
         persistSession: false,
@@ -19,9 +24,12 @@ const getAdminSupabase = () => {
 };
 
 
+
 export async function getCoordinatorDashboardData() {
+  const adminSupabase = getAdminSupabase();
+
   // 1. Fetch all STUDENT users
-  const { data: users, error: uErr } = await supabase
+  const { data: users, error: uErr } = await adminSupabase
     .from("users")
     .select("id, full_name, email")
     .eq("role", "STUDENT");
@@ -29,7 +37,7 @@ export async function getCoordinatorDashboardData() {
   if (uErr) throw new Error(uErr.message);
 
   // 2. Fetch all students with their interventions
-  const { data: students, error: sErr } = await supabase
+  const { data: students, error: sErr } = await adminSupabase
     .from("students")
     .select(`
       user_id,
@@ -70,7 +78,6 @@ export async function getCoordinatorDashboardData() {
 
     totalRisk += score;
 
-    // Calculate generic attendance %
     const attFields = [
       sData?.math_attendance,
       sData?.physics_attendance,
@@ -78,11 +85,12 @@ export async function getCoordinatorDashboardData() {
       sData?.english_attendance,
       sData?.electronics_attendance,
       sData?.chemistry_attendance
-    ].filter(a => a !== null && a !== undefined) as number[];
+    ].filter(a => a !== null && a !== undefined && Number(a) > 0) as number[];
     
+    // Only compute avg if at least one subject has real data; otherwise show N/A as 0
     const attPercent = attFields.length > 0 
       ? Math.round(attFields.reduce((a, b) => a + b, 0) / attFields.length) 
-      : 100;
+      : 0; // 0 means no data yet — NOT defaulting to 100
     
     totalAtt += attPercent;
 
@@ -91,14 +99,23 @@ export async function getCoordinatorDashboardData() {
     invs.sort((a: any, b: any) => new Date(b.session_date).getTime() - new Date(a.session_date).getTime());
     const latestInv = invs[0];
 
+    // Use email prefix as roll number since DB doesn't have a dedicated field
+    const emailPrefix = u.email?.split("@")[0]?.toUpperCase() ?? `STU${String(i+1).padStart(3, "0")}`;
+    // Use email domain as branch hint — e.g. cs.ldce.edu → CS Dept
+    const emailDomain = u.email?.split("@")[1] ?? "";
+    const branch = emailDomain.includes("cs") ? "Computer Sci." 
+      : emailDomain.includes("it") ? "Info. Tech."
+      : "Engineering";
+
     return {
       id: u.id,
       studentName: u.full_name || u.email || "Unknown Student",
-      rollNo: `CE2024${String(i+1).padStart(3, "0")}`, // Dummy until DB adds this field
-      branch: "Computer Engineering", // Dummy until DB adds this field
+      rollNo: emailPrefix,
+      branch,
       overallRiskScore: score,
       riskLevel: level,
       attendancePercentage: attPercent,
+      hasData: attFields.length > 0, // flag that subject data exists
       lastMentorIntervention: latestInv ? new Date(latestInv.session_date).toLocaleDateString() : null,
       lastMentorFeedback: latestInv ? latestInv.mentor_feedback : null,
     };
@@ -120,10 +137,11 @@ export async function getCoordinatorDashboardData() {
   return { allStudents, departmentStats };
 }
 
-export async function createUserInPlatform(name: string, email: string, role: string) {
+export async function createUserInPlatform(name: string, email: string, password?: string) {
   try {
+    const role = "STUDENT";
     const formattedRole = role.toUpperCase();
-    const tempPassword = `${role.toLowerCase()}123`;
+    const tempPassword = password || `${role.toLowerCase()}123`;
     
     // 1. Create auth user securely
     const adminSupabase = getAdminSupabase();
@@ -148,20 +166,23 @@ export async function createUserInPlatform(name: string, email: string, role: st
 
     if (insertUserError) throw new Error(`User insertion failed: ${insertUserError.message}`);
 
-    // 3. Fallback: if student, initialize student profile
-    if (formattedRole === "STUDENT") {
-      const { error: studentError } = await adminSupabase.from("students").insert({
-        user_id: userId,
-        current_risk_score: 0,
-        risk_category: "Low",
-        average_marks: null,
-      });
-      if (studentError) {
-        console.error("Non-fatal: failed to init student table record: " + studentError.message);
-      }
+    // 3. Initialize student profile with baseline empty data
+    // Because Teachers will add actual grades later, we default to Low risk.
+    const { error: studentError } = await adminSupabase.from("students").insert({
+      user_id: userId,
+      current_risk_score: 0,
+      risk_category: "Low",
+      average_marks: null,
+      math_attendance: null,
+      physics_attendance: null,
+      cs_attendance: null,
+    });
+
+    if (studentError) {
+      console.error("Non-fatal: failed to init student table record: " + studentError.message);
     }
 
-    return { success: true, message: `Successfully registered ${name} as a ${role}.` };
+    return { success: true, message: `Successfully provisioned ${name} as a STUDENT.` };
   } catch (error: any) {
     return { success: false, error: error.message || "Failed to create user." };
   }

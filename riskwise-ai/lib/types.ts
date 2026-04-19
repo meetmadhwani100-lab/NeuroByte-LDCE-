@@ -12,6 +12,8 @@ export interface ChatRequest {
   studentId: string;
   message: string;
   conversationHistory?: ChatMessage[];
+  userRole?: string;
+  contextData?: any;
 }
 
 export interface ChatResponse {
@@ -32,6 +34,8 @@ export interface StudentContext {
   attendance?: number;
   averageMarks?: number;
   pendingAssignments?: number;
+  userRole?: string;
+  contextData?: any;
 }
 
 export interface ChatbotConfig {

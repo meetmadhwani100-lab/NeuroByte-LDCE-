@@ -43,6 +43,8 @@ export async function POST(request: NextRequest) {
       studentId: body.studentId,
       message: body.message,
       conversationHistory,
+      userRole: (body as any).userRole,
+      contextData: (body as any).contextData,
     });
 
     return NextResponse.json(response, { status: 200 });
@@ -65,10 +67,18 @@ export async function POST(request: NextRequest) {
  */
 export async function GET(request: NextRequest) {
   try {
+    const searchParams = request.nextUrl.searchParams;
+    const studentId = searchParams.get("studentId");
+    
+    if (studentId) {
+      const history = await getChatHistory(studentId, 50); // Get past 50 messages
+      return NextResponse.json({ history }, { status: 200 });
+    }
+
     const status = await getChatbotStatus();
     return NextResponse.json(status, { status: 200 });
   } catch (error) {
-    console.error("[Chat API] Status check error:", error);
+    console.error("[Chat API] Status/History check error:", error);
 
     return NextResponse.json(
       {

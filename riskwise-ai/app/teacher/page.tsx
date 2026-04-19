@@ -14,6 +14,7 @@ import {
   getStudentAssignments,
   toggleAssignmentStatus,
 } from "@/actions/teacherActions";
+import { ChatbotFAB } from "@/components/ChatbotFAB";
 
 type DbStudent = {
   id: string;          // users.id (auth UID)
@@ -209,7 +210,7 @@ export default function TeacherDashboard() {
               </div>
               <span className="text-sm font-semibold text-amber-700">{teacherName}</span>
             </div>
-            <button onClick={() => router.push("/login")}
+            <button onClick={async () => { await supabase.auth.signOut(); router.push("/login"); }}
               className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-red-600 hover:bg-red-50 px-3 py-2 rounded-xl transition-all">
               <LogOut className="w-4 h-4" /> Sign Out
             </button>
@@ -479,6 +480,17 @@ export default function TeacherDashboard() {
           </div>
         </div>
       )}
+
+      {/* Chatbot FAB */}
+      <ChatbotFAB
+        studentId={teacherUserId}
+        userRole="TEACHER"
+        contextData={{
+          totalStudents: students.length,
+          selectedStudent: selectedStudent?.studentName,
+          specialty: specialty,
+        }}
+      />
     </div>
   );
 }

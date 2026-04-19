@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   ShieldCheck, ChevronRight, LogOut, AlertTriangle, Bell,
-  CheckCircle2, Loader2, ClipboardList, TrendingUp, BookOpen, Calendar, MessageSquare
+  CheckCircle2, Loader2, ClipboardList, TrendingUp, BookOpen, Calendar, MessageSquare, Download
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot
@@ -17,6 +17,9 @@ import {
 } from "@/actions/studentActions";
 import { RiskRing } from "@/components/RiskRing";
 import { RiskBadge } from "@/components/RiskBadge";
+import { SubjectRadarChart } from "@/components/SubjectRadarChart";
+import { ChatbotFAB } from "@/components/ChatbotFAB";
+import { generateStudentReport } from "@/lib/pdfGenerator";
 
 // Must match studentActions.ts SUBJECT_ATTENDANCE_COLS
 const SUBJECT_COLS = [
@@ -76,6 +79,8 @@ export default function StudentDashboard() {
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [studentName, setStudentName] = useState("Student");
   const [studentData, setStudentData] = useState<StudentRow | null>(null);
+  const [studentUserId, setStudentUserId] = useState("");
+  const [pdfLoading, setPdfLoading] = useState(false);
 
   // general feedback
   const [feedbackText, setFeedbackText] = useState("");
@@ -101,6 +106,7 @@ export default function StudentDashboard() {
 
       if (userData?.role !== "STUDENT") { router.push("/login"); return; }
       setStudentName(userData?.full_name || "Student");
+      setStudentUserId(session.user.id);
 
       try {
         const data = await getStudentDashboardData(session.user.id);
@@ -213,7 +219,7 @@ export default function StudentDashboard() {
               </div>
               <span className="text-sm font-medium text-slate-700">{studentName}</span>
             </div>
-            <button onClick={() => router.push("/login")}
+            <button onClick={async () => { await supabase.auth.signOut(); router.push("/login"); }}
               className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-red-600 hover:bg-red-50 px-3 py-2 rounded-xl transition-all">
               <LogOut className="w-4 h-4" /> Sign Out
             </button>
@@ -306,6 +312,57 @@ export default function StudentDashboard() {
                   </div>
                 </div>
               )}
+              {/* Radar Chart */}
+              {activeSubjects.length > 0 && (
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                  <h2 className="font-semibold text-slate-800 text-sm uppercase tracking-wide mb-1 flex items-center gap-2">
+                    <TrendingUp className="w-4 h-4 text-indigo-500" /> Subject Performance Radar
+                  </h2>
+                  <p className="text-xs text-slate-400 mb-3">Solid = Marks &bull; Dashed = Attendance</p>
+                  <SubjectRadarChart
+                    riskLevel={riskLevel}
+                    data={activeSubjects.map(s => ({
+                      label: s.label,
+                      marks: Number(studentData?.[s.marksKey] ?? 0),
+                      attendance: Number(studentData?.[s.attKey] ?? 0),
+                    }))}
+                  />
+                </div>
+              )}
+
+              {/* PDF Download */}
+              <button
+                onClick={async () => {
+                  if (!studentData) return;
+                  setPdfLoading(true);
+                  try {
+                    await generateStudentReport({
+                      name: studentName,
+                      email: "",
+                      risk_category: riskLevel,
+                      current_risk_score: riskScore,
+                      top_risk_reasons: studentData.top_risk_reasons,
+                      math_marks: Number(studentData.math_marks ?? 0),
+                      physics_marks: Number(studentData.physics_marks ?? 0),
+                      cs_marks: Number(studentData.cs_marks ?? 0),
+                      english_marks: Number(studentData.english_marks ?? 0),
+                      biology_marks: Number(studentData.biology_marks ?? 0),
+                      math_attendance: Number(studentData.math_attendance ?? 0),
+                      physics_attendance: Number(studentData.physics_attendance ?? 0),
+                      cs_attendance: Number(studentData.cs_attendance ?? 0),
+                      english_attendance: Number(studentData.english_attendance ?? 0),
+                      biology_attendance: Number(studentData.biology_attendance ?? 0),
+                    });
+                  } finally {
+                    setPdfLoading(false);
+                  }
+                }}
+                disabled={pdfLoading}
+                className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-semibold text-sm py-3 rounded-2xl transition-all shadow-md shadow-indigo-100"
+              >
+                {pdfLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                {pdfLoading ? "Generating PDF..." : "Download My Risk Report (PDF)"}
+              </button>
             </div>
 
             {/* ── RIGHT ────────────────────────────────────────────────────── */}
@@ -506,6 +563,24 @@ export default function StudentDashboard() {
           </div>
         )}
       </div>
+
+      {/* Floating AI Chatbot */}
+      {studentUserId && (
+        <ChatbotFAB
+          studentId={studentUserId}
+          userRole="STUDENT"
+          contextData={{
+            riskScore,
+            riskLevel,
+            riskReasons,
+            activeSubjects: activeSubjects.map(s => ({
+              subject: s.label,
+              marks: studentData ? Number(studentData[s.marksKey]) : 0,
+              attendance: studentData ? Number(studentData[s.attKey]) : 0,
+            }))
+          }}
+        />
+      )}
     </div>
   );
 }

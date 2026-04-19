@@ -14,7 +14,7 @@ import type { ChatMessage, StudentContext, ChatResponse } from "./types";
 
 // Configuration for the chatbot
 const CHATBOT_CONFIG = {
-  modelName: "gemini-1.5-flash",
+  modelName: "gemini-2.5-flash",
   temperature: 0.7,
   maxTokens: 1024,
 };
@@ -37,15 +37,11 @@ Be warm, supportive, and non-judgmental. Always provide specific, actionable adv
 
   const contextInfo = `
 
-CURRENT STUDENT PROFILE:
-- Risk Score: ${context.currentRiskScore ?? "N/A"}/100
-- Risk Category: ${context.riskCategory ?? "Unknown"}
-- Attendance: ${context.attendance ?? "N/A"}%
-- Average Marks: ${context.averageMarks ?? "N/A"}%
-- Pending Assignments: ${context.pendingAssignments ?? "N/A"}
-- Key Risk Factors: ${context.topRiskReasons?.join(", ") ?? "None identified"}
+CURRENT DASHBOARD CONTEXT:
+- Viewing as Role: ${context.userRole ?? "Unknown"}
+- Relevant Data Loaded on Screen: ${JSON.stringify(context.contextData, null, 2)}
 
-Address the student's specific situation and provide tailored recommendations based on these metrics.`;
+Address the user based on their Role (if Student, speak directly to them. If Mentor/Teacher/Coordinator, advise them on how to manage the students in the data). Provide tailored recommendations based strictly on the metrics presented above.`;
 
   return basePrompt + contextInfo;
 }
@@ -80,32 +76,32 @@ export async function generateChatResponse(
 
     const systemPrompt = buildSystemPrompt(studentContext);
 
-    // Format conversation history for Gemini
-    const messages = [
+    // Format conversation history for Gemini (strictly alternating user/model)
+    // We prepend the system prompt as a user message, and a generic acknowledgment as the model
+    const historyParts: any[] = [
       {
         role: "user",
         parts: [{ text: systemPrompt }],
       },
-      ...conversationHistory.map((msg) => ({
-        role: msg.role === "user" ? ("user" as const) : ("model" as const),
-        parts: [{ text: msg.content }],
-      })),
       {
-        role: "user",
-        parts: [{ text: userMessage }],
-      },
+        role: "model",
+        parts: [{ text: "Understood. I am ready to assist based on the provided dashboard context." }],
+      }
     ];
 
-    // Call Gemini API using startChat
-    const chat = model.startChat();
-
-    // Send the entire conversation
-    for (let i = 0; i < messages.length - 1; i++) {
-      const msg = messages[i];
-      if (msg.role === "user") {
-        await chat.sendMessage(msg.parts[0].text);
-      }
+    // Append the past conversation
+    for (const msg of conversationHistory) {
+      if (msg.content.trim() === "") continue; // Skip empty
+      historyParts.push({
+        role: msg.role === "user" ? "user" : "model",
+        parts: [{ text: msg.content }],
+      });
     }
+
+    // Call Gemini API using startChat with seeded history
+    const chat = model.startChat({
+      history: historyParts,
+    });
 
     // Send the current user message and get response
     const result = await chat.sendMessage(userMessage);
@@ -154,35 +150,35 @@ function generateSuggestions(context?: StudentContext): string[] {
 
   const suggestions: string[] = [];
 
-  // Add suggestions based on attendance
-  if (context.attendance && context.attendance < 75) {
-    suggestions.push("Improve attendance");
-  }
+  const role = context.userRole;
+  const data = context.contextData || {};
 
-  // Add suggestions based on marks
-  if (context.averageMarks && context.averageMarks < 50) {
-    suggestions.push("Focus on weak subjects");
-  }
-
-  // Add suggestions based on pending assignments
-  if (context.pendingAssignments && context.pendingAssignments > 0) {
-    suggestions.push("Prioritize pending assignments");
-  }
-
-  // Add suggestions based on risk category
-  if (context.riskCategory === "High") {
-    suggestions.push("Create study schedule");
-  }
-
-  if (context.riskCategory === "Medium") {
-    suggestions.push("Stay consistent");
+  if (role === "STUDENT") {
+    // Add suggestions based on attendance
+    if (data.activeSubjects?.some((s: any) => s.attendance < 75)) {
+      suggestions.push("How to improve attendance");
+    }
+    // Add suggestions based on risk category
+    if (data.riskLevel === "High") {
+      suggestions.push("Create a study schedule");
+    }
+    suggestions.push("Explain my risk factors");
+  } else if (role === "MENTOR") {
+    suggestions.push(`Analyze ${data.selectedStudent || "my"} students`);
+    if (data.highRiskStudents > 0) {
+      suggestions.push("Action plan for high-risk students");
+    }
+    suggestions.push("Draft warning email template");
+  } else {
+    suggestions.push("Analyze current dashboard data");
+    suggestions.push("Suggest interventions");
   }
 
   // Ensure we have at least 3 suggestions
   const defaultSuggestions = [
-    "Ask for help",
-    "Review notes",
-    "Take a break",
+    "Summarize dashboard",
+    "Identify critical risks",
+    "How does RiskWise work?",
   ];
 
   return suggestions.length > 0
@@ -196,39 +192,7 @@ function generateSuggestions(context?: StudentContext): string[] {
 function generateRecommendations(context: StudentContext): string[] {
   const recommendations: string[] = [];
 
-  // Attendance-based recommendations
-  if (context.attendance && context.attendance < 60) {
-    recommendations.push(
-      "URGENT: Attend all remaining classes. Every class matters for your risk score."
-    );
-  } else if (context.attendance && context.attendance < 75) {
-    recommendations.push(
-      "Try to improve attendance to at least 75%. This is critical for your academic success."
-    );
-  }
-
-  // Marks-based recommendations
-  if (context.averageMarks && context.averageMarks < 40) {
-    recommendations.push(
-      "Consider seeking extra tutoring or study groups to improve your marks."
-    );
-  } else if (context.averageMarks && context.averageMarks < 60) {
-    recommendations.push(
-      "Work on strengthening concepts in weaker subjects through consistent practice."
-    );
-  }
-
-  // Assignment-based recommendations
-  if (context.pendingAssignments && context.pendingAssignments > 3) {
-    recommendations.push(
-      `You have ${context.pendingAssignments} pending assignments. Create a priority list and tackle them one by one.`
-    );
-  }
-
-  if (recommendations.length === 0) {
-    recommendations.push("Keep up the good work! Maintain your current momentum.");
-  }
-
+  recommendations.push("Utilize the suggested interventions to mitigate risk.");
   return recommendations;
 }
 

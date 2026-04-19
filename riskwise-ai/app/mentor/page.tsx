@@ -5,12 +5,15 @@ import { useRouter } from "next/navigation";
 import {
   ShieldCheck, ChevronRight, LogOut, Search, Users,
   AlertTriangle, CheckCircle2, Calendar,
-  Loader2, Send, MessageSquare, TrendingUp, Bell, BookOpen,
+  Loader2, Send, MessageSquare, TrendingUp, Bell, BookOpen, Mail,
 } from "lucide-react";
 import { supabase } from "@/lib/Client";
 import { getAssignedStudents, getStudentDetails, logIntervention } from "@/actions/mentorActions";
 import { RiskRing } from "@/components/RiskRing";
 import { RiskBadge } from "@/components/RiskBadge";
+import { SubjectRadarChart } from "@/components/SubjectRadarChart";
+import { EscalationChain } from "@/components/EscalationChain";
+import { ChatbotFAB } from "@/components/ChatbotFAB";
 
 const SUBJECT_COLS = [
   { label: "Math",    marksKey: "math_marks",    attKey: "math_attendance" },
@@ -70,6 +73,11 @@ export default function MentorDashboard() {
   const [interventionLoading, setInterventionLoading] = useState(false);
   const [interventionSuccess, setInterventionSuccess] = useState(false);
 
+  // bulk email
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [emailResult, setEmailResult] = useState<{ sent: number; total: number } | null>(null);
+  const [mentorUserId, setMentorUserId] = useState("");
+
   // ── Bouncer ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     const run = async () => {
@@ -85,6 +93,7 @@ export default function MentorDashboard() {
       if (userData?.role !== "MENTOR") { router.push("/login"); return; }
       setMentorName(userData?.full_name || "Mentor");
       setMentorId(session.user.id);
+      setMentorUserId(session.user.id);
 
       try {
         const list = await getAssignedStudents(session.user.id);
@@ -133,6 +142,33 @@ export default function MentorDashboard() {
     }
   };
 
+  const handleBulkEmail = async () => {
+    setEmailLoading(true);
+    setEmailResult(null);
+    try {
+      // Build at-risk student payload from the loaded list
+      const atRiskStudents = students
+        .filter(s => (s as any).risk_category === "High" || (s as any).current_risk_score >= 60)
+        .map(s => ({
+          name: s.studentName,
+          parent_email: (s as any).parent_email ?? null,
+          avg_marks: (s as any).avg_marks ?? 50,
+          avg_attendance: (s as any).avg_attendance ?? 70,
+          risk_category: (s as any).risk_category ?? "Low",
+        }));
+
+      const res = await fetch("/api/send-mail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ students: atRiskStudents, type: "WARNING" }),
+      });
+      const data = await res.json();
+      setEmailResult({ sent: data.sent ?? 0, total: data.total ?? 0 });
+    } finally {
+      setEmailLoading(false);
+    }
+  };
+
   if (!isAuthorized) {
     return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-slate-500">Verifying secure access...</div>;
   }
@@ -176,13 +212,22 @@ export default function MentorDashboard() {
             <span className="text-sm text-slate-500 font-medium">Mentor Portal</span>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              onClick={handleBulkEmail}
+              disabled={emailLoading}
+              title="Send warning emails to all at-risk students' parents"
+              className="flex items-center gap-1.5 text-sm bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 font-semibold px-3 py-2 rounded-xl transition-all disabled:opacity-60"
+            >
+              {emailLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+              {emailLoading ? "Sending..." : "Alert Parents"}
+            </button>
             <div className="flex items-center gap-2 bg-teal-50 border border-teal-100 rounded-xl px-3 py-2">
               <div className="w-6 h-6 rounded-full bg-gradient-to-br from-teal-400 to-emerald-300 flex items-center justify-center text-white text-xs font-bold">
                 {mentorName[0]}
               </div>
               <span className="text-sm font-semibold text-teal-700">{mentorName}</span>
             </div>
-            <button onClick={() => router.push("/login")}
+            <button onClick={async () => { await supabase.auth.signOut(); router.push("/login"); }}
               className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-red-600 hover:bg-red-50 px-3 py-2 rounded-xl transition-all">
               <LogOut className="w-4 h-4" /> Sign Out
             </button>
@@ -287,12 +332,35 @@ export default function MentorDashboard() {
                 </div>
               </div>
 
-              {/* Subject Records */}
+              {/* Escalation Chain */}
+              <EscalationChain
+                riskScore={riskScore}
+                riskCategory={riskLevel}
+                hasMentor={true}
+                hasIntervention={(detail.interventions ?? []).length > 0}
+                emailSent={false}
+              />
+
+              {/* Subject Records + Radar Chart */}
               {activeSubjects.length > 0 && (
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
                   <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
                     <BookOpen className="w-4 h-4 text-indigo-500" /> Academic Performance
                   </h3>
+                  {/* Radar Chart */}
+                  {activeSubjects.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-xs text-slate-400 mb-2">Solid = Marks &bull; Dashed = Attendance</p>
+                      <SubjectRadarChart
+                        riskLevel={riskLevel as "Low" | "Medium" | "High"}
+                        data={activeSubjects.map(s => ({
+                          label: s.label,
+                          marks: Number(detail[s.marksKey] ?? 0),
+                          attendance: Number(detail[s.attKey] ?? 0),
+                        }))}
+                      />
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-3">
                     {activeSubjects.map(s => {
                       const m = Number(detail[s.marksKey] ?? 0);
@@ -459,6 +527,27 @@ export default function MentorDashboard() {
           )}
         </main>
       </div>
+
+      {/* Email result toast */}
+      {emailResult && (
+        <div className="fixed bottom-24 right-6 bg-white border border-slate-200 rounded-2xl shadow-xl p-4 z-50 text-sm max-w-xs">
+          <p className="font-semibold text-slate-800 mb-1">📧 Emails Sent</p>
+          <p className="text-slate-600">{emailResult.sent} of {emailResult.total} parents notified successfully.</p>
+          <button onClick={() => setEmailResult(null)} className="text-xs text-slate-400 hover:text-slate-600 mt-2">Dismiss</button>
+        </div>
+      )}
+
+      {/* Chatbot FAB */}
+      <ChatbotFAB
+        studentId={mentorUserId}
+        userRole="MENTOR"
+        contextData={{
+          totalStudents: students.length,
+          highRiskStudents: students.filter(s => (s as any).risk_category === "High").length,
+          selectedStudent: selectedStudent?.studentName,
+          selectedRiskScore: detail?.current_risk_score,
+        }}
+      />
     </div>
   );
 }

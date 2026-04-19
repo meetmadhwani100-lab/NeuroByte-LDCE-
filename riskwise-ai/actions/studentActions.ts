@@ -52,7 +52,7 @@ export async function getStudentDashboardData(studentUserId: string) {
   }
 
   // 2. Fetch Assignments safely (Option B: Relational schema mapping)
-  let safeAssignments = [];
+  let safeAssignments: any[] = [];
   const { data: asgData, error: asgErr } = await supabase
     .from("student_assignments")
     .select(`
@@ -83,7 +83,7 @@ export async function getStudentDashboardData(studentUserId: string) {
   }
 
   // 3. Fetch Interventions safely
-  let safeInterventions = [];
+  let safeInterventions: any[] = [];
   const { data: intData, error: intErr } = await supabase
     .from("interventions")
     .select("id, session_date, status, mentor_feedback")
@@ -97,7 +97,7 @@ export async function getStudentDashboardData(studentUserId: string) {
   }
 
   // 4. Fetch Risk History for the Timeline Graph
-  let safeRiskHistory = [];
+  let safeRiskHistory: any[] = [];
   const { data: rhData, error: rhErr } = await supabase
     .from("risk_history")
     .select("recorded_date, risk_score")

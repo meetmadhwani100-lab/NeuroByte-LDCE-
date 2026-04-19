@@ -13,6 +13,7 @@ import {
 import { getCoordinatorDashboardData, createUserInPlatform } from "@/actions/coordinatorActions";
 import { supabase } from "@/lib/Client";
 import { RiskBadge } from "@/components/RiskBadge";
+import { ChatbotFAB } from "@/components/ChatbotFAB";
 
 const RISK_COLORS = {
   High: "#ef4444",
@@ -32,10 +33,12 @@ export default function CoordinatorDashboard() {
 
   const [liveStudents, setLiveStudents] = useState<any[]>([]);
   const [liveStats, setLiveStats] = useState<any>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [coordinatorName, setCoordinatorName] = useState("Coordinator");
+  const [coordinatorUserId, setCoordinatorUserId] = useState("");
 
-  // Add User Form State
-  const [newUser, setNewUser] = useState({ name: "", email: "", role: "STUDENT" });
+  // Add Student Form State
+  const [newStudent, setNewStudent] = useState({ name: "", email: "", password: "" });
   const [formState, setFormState] = useState<{ loading: boolean; error: string | null; success: string | null }>({
     loading: false, error: null, success: null
   });
@@ -58,13 +61,15 @@ export default function CoordinatorDashboard() {
         return;
       }
       setCoordinatorName(userData.full_name || "Coordinator");
+      setCoordinatorUserId(session.user.id);
 
       try {
         const { allStudents, departmentStats } = await getCoordinatorDashboardData();
         setLiveStudents(allStudents);
         setLiveStats(departmentStats);
-      } catch (err) {
+      } catch (err: any) {
         console.error("Dashboard failed to initialize", err);
+        setLoadError(err.message || "Failed to load dashboard data.");
       }
 
       setIsAuthorized(true);
@@ -116,30 +121,46 @@ export default function CoordinatorDashboard() {
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
-  const handleCreateUser = async (e: React.FormEvent) => {
+  const handleCreateStudent = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newUser.name.trim() || !newUser.email.trim()) {
-      setFormState({ loading: false, error: "Name and email are required.", success: null });
+    if (!newStudent.name.trim() || !newStudent.email.trim() || !newStudent.password.trim()) {
+      setFormState({ loading: false, error: "Name, email, and password are required.", success: null });
       return;
     }
     setFormState({ loading: true, error: null, success: null });
-    const res = await createUserInPlatform(newUser.name, newUser.email, newUser.role);
+    
+    const res = await createUserInPlatform(newStudent.name, newStudent.email, newStudent.password);
     if (res.success) {
-      setFormState({ loading: false, error: null, success: res.message || "User created successfully." });
-      setNewUser({ name: "", email: "", role: "STUDENT" });
-      // Re-fetch stats so the new user displays if they are a student
-      if (newUser.role === "STUDENT") {
-        const { allStudents, departmentStats } = await getCoordinatorDashboardData();
-        setLiveStudents(allStudents);
-        setLiveStats(departmentStats);
-      }
+      setFormState({ loading: false, error: null, success: res.message || "Student provisioned successfully." });
+      setNewStudent({ name: "", email: "", password: "" });
+      
+      // Re-fetch stats
+      const { allStudents, departmentStats } = await getCoordinatorDashboardData();
+      setLiveStudents(allStudents);
+      setLiveStats(departmentStats);
     } else {
       setFormState({ loading: false, error: res.error || "Failed", success: null });
     }
   };
 
-  if (!isAuthorized || !liveStats) {
+  if (!isAuthorized) {
     return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-slate-500 font-medium">Loading department data...</div>;
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-slate-50 gap-4">
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-6 max-w-md text-center">
+          <p className="text-red-600 font-semibold mb-2">⚠️ Failed to load dashboard</p>
+          <p className="text-sm text-red-400">{loadError}</p>
+          <button onClick={() => window.location.reload()} className="mt-4 text-sm text-white bg-red-500 hover:bg-red-600 px-4 py-2 rounded-xl">Retry</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!liveStats) {
+    return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-slate-500 font-medium">Crunching department numbers...</div>;
   }
 
   return (
@@ -163,7 +184,7 @@ export default function CoordinatorDashboard() {
               <span className="text-sm font-medium text-purple-700">{coordinatorName}</span>
             </div>
             <button
-              onClick={() => router.push("/login")}
+              onClick={async () => { await supabase.auth.signOut(); router.push("/login"); }}
               className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-red-600 hover:bg-red-50 px-3 py-2 rounded-xl transition-all"
             >
               <LogOut className="w-4 h-4" /> Sign Out
@@ -228,42 +249,39 @@ export default function CoordinatorDashboard() {
           ))}
         </div>
 
-        {/* Add User Form Section */}
+        {/* Add Student Form Section */}
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-8">
           <div className="mb-4">
             <h3 className="font-semibold text-slate-800 flex items-center gap-2">
-              <Users className="w-5 h-5 text-indigo-500" /> Quick Add Platform User
+              <Users className="w-5 h-5 text-indigo-500" /> Provision New Student
             </h3>
             <p className="text-xs text-slate-500 mt-1">
-              Add new Members. System will auto-generate temporary password: <span className="font-mono text-purple-600 bg-purple-50 px-1 rounded">[role]123</span>
+              Enroll a new student to the university. Risk scores will remain 'Low' until subject teachers log their baseline grades. Let them choose a password.
             </p>
           </div>
           
-          <form onSubmit={handleCreateUser} className="flex flex-col md:flex-row gap-4 items-end">
+          <form onSubmit={handleCreateStudent} className="flex flex-col md:flex-row gap-4 items-end">
             <div className="w-full md:w-1/3">
               <label className="block text-xs font-semibold text-slate-600 mb-1.5 ml-1">Full Name</label>
               <input type="text" placeholder="e.g. Rahul Sharma" required
-                value={newUser.name} onChange={e => setNewUser(p => ({ ...p, name: e.target.value }))}
+                value={newStudent.name} onChange={e => setNewStudent(p => ({ ...p, name: e.target.value }))}
                 className="w-full text-sm placeholder-slate-400 bg-slate-50 text-slate-800 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded-xl px-4 py-2.5 transition-all" />
             </div>
             <div className="w-full md:w-1/3">
               <label className="block text-xs font-semibold text-slate-600 mb-1.5 ml-1">Email Address</label>
               <input type="email" placeholder="e.g. rahul@student.edu" required
-                value={newUser.email} onChange={e => setNewUser(p => ({ ...p, email: e.target.value }))}
+                value={newStudent.email} onChange={e => setNewStudent(p => ({ ...p, email: e.target.value }))}
                 className="w-full text-sm placeholder-slate-400 bg-slate-50 text-slate-800 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded-xl px-4 py-2.5 transition-all" />
             </div>
-            <div className="w-full md:w-1/4">
-              <label className="block text-xs font-semibold text-slate-600 mb-1.5 ml-1">System Role</label>
-              <select value={newUser.role} onChange={e => setNewUser(p => ({ ...p, role: e.target.value }))}
-                className="w-full text-sm bg-slate-50 text-slate-800 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded-xl px-4 py-2.5 transition-all appearance-none cursor-pointer">
-                <option value="STUDENT">Student</option>
-                <option value="TEACHER">Subject Teacher</option>
-                <option value="MENTOR">Faculty Mentor</option>
-              </select>
+            <div className="w-full md:w-1/3">
+              <label className="block text-xs font-semibold text-slate-600 mb-1.5 ml-1">Login Password</label>
+              <input type="password" placeholder="Create a password" required minLength={6}
+                value={newStudent.password} onChange={e => setNewStudent(p => ({ ...p, password: e.target.value }))}
+                className="w-full text-sm placeholder-slate-400 bg-slate-50 text-slate-800 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded-xl px-4 py-2.5 transition-all" />
             </div>
             <button disabled={formState.loading} type="submit" 
-              className="w-full md:w-auto mt-2 md:mt-0 font-semibold text-sm px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl shadow-sm transition-all text-center">
-              {formState.loading ? "Provisioning..." : "Add User"}
+              className="w-full md:w-auto mt-2 md:mt-0 font-semibold text-sm px-8 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl shadow-sm transition-all focus:ring-2 focus:ring-indigo-400 focus:ring-offset-2 whitespace-nowrap">
+              {formState.loading ? "Provisioning..." : "Add Student"}
             </button>
           </form>
 
@@ -305,7 +323,7 @@ export default function CoordinatorDashboard() {
                 </Pie>
                 <Tooltip
                   contentStyle={{ background: "white", border: "1px solid #e2e8f0", borderRadius: "12px" }}
-                  formatter={(value: number) => [`${value} students`, ""]}
+                  formatter={(value: any) => [`${value} students`, ""]}
                 />
                 <Legend
                   formatter={(value) => <span className="text-xs font-medium text-slate-600">{value}</span>}
@@ -434,12 +452,16 @@ export default function CoordinatorDashboard() {
                       <RiskBadge level={student.riskLevel} />
                     </td>
                     <td className="px-4 py-3.5 text-center">
-                      <span className={`text-sm font-semibold ${
-                        student.attendancePercentage < 65 ? "text-red-600" :
-                        student.attendancePercentage < 75 ? "text-amber-600" : "text-teal-600"
-                      }`}>
-                        {student.attendancePercentage}%
-                      </span>
+                      {student.hasData ? (
+                        <span className={`text-sm font-semibold ${
+                          student.attendancePercentage < 65 ? "text-red-600" :
+                          student.attendancePercentage < 75 ? "text-amber-600" : "text-teal-600"
+                        }`}>
+                          {student.attendancePercentage}%
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-300 italic">No data</span>
+                      )}
                     </td>
                     <td className="px-4 py-3.5 text-slate-500 text-xs">
                       {student.lastMentorIntervention || (
@@ -499,6 +521,20 @@ export default function CoordinatorDashboard() {
           )}
         </div>
       </div>
+
+      {/* Chatbot FAB */}
+      <ChatbotFAB
+        studentId={coordinatorUserId}
+        userRole="COORDINATOR"
+        contextData={{
+          totalStudents: liveStats?.totalStudents,
+          highRisk: liveStats?.highRisk,
+          mediumRisk: liveStats?.mediumRisk,
+          lowRisk: liveStats?.lowRisk,
+          avgAttendance: liveStats?.avgAttendance,
+          departmentRisk: liveStats?.departmentOverallRisk,
+        }}
+      />
     </div>
   );
 }
